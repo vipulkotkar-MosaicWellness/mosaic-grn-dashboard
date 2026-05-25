@@ -434,6 +434,9 @@ const LIVE_SHEET_ID = '1HgwvZDNzVyjh8uXln3EvH7cX9QebeLsh8YoapSq4jdI';
 
 window.addEventListener('DOMContentLoaded',()=>{
   buildDrops();buildHead();applyF();renderS1();
+  // Schedule UI — start only after DOM is ready
+  updateScheduleUI();
+  setInterval(updateScheduleUI,1000);
   // Auto-fetch live data from Google Sheet on page open
   if(LIVE_SHEET_ID&&LIVE_SHEET_ID!=='YOUR_GOOGLE_SHEET_ID') loadLiveData();
 });
@@ -655,6 +658,7 @@ function fmtWinDate(d){
 }
 function updateScheduleUI(){
   const btn=qs('rfBtn'),pill=qs('livePill'),ll=qs('liveLabel'),sl=qs('scheduleLabel'),sv=qs('scheduleVal');
+  if(!btn||!pill||!ll||!sl||!sv) return; // DOM not ready yet
   if(isInRefreshWindow()){
     btn.disabled=false;btn.classList.add('ready');qs('rfBtnLabel').textContent='Refresh Now';
     pill.className='live-pill live-now';ll.textContent='LIVE';
@@ -669,8 +673,7 @@ function updateScheduleUI(){
     sv.textContent=fmtDuration(diff);sv.className='schedule-val countdown';
   }
 }
-updateScheduleUI();
-setInterval(updateScheduleUI,1000);
+// updateScheduleUI() moved into DOMContentLoaded below
 
 // ── LIVE DATA FROM GOOGLE SHEET ──────────────────────────────────
 function loadLiveData(){
@@ -679,8 +682,9 @@ function loadLiveData(){
     return;
   }
   const btn=qs('rfBtn');
-  btn.classList.add('spin');
-  qs('rfBtnLabel').textContent='Loading...';
+  const lbl=qs('rfBtnLabel');
+  if(btn) btn.classList.add('spin');
+  if(lbl) lbl.textContent='Loading...';
 
   const dataUrl='https://docs.google.com/spreadsheets/d/'+LIVE_SHEET_ID+'/gviz/tq?tqx=out:json&sheet=Data';
   const metaUrl='https://docs.google.com/spreadsheets/d/'+LIVE_SHEET_ID+'/gviz/tq?tqx=out:json&sheet=Meta';
@@ -732,8 +736,9 @@ function loadLiveData(){
   }).catch(err=>{
     showToast('\u26a0 Live load failed — '+err.message);
   }).finally(()=>{
-    btn.classList.remove('spin');
-    qs('rfBtnLabel').textContent=isInRefreshWindow()?'Refresh Now':'Refresh';
+    const b=qs('rfBtn'),l=qs('rfBtnLabel');
+    if(b) b.classList.remove('spin');
+    if(l) l.textContent=isInRefreshWindow()?'Refresh Now':'Refresh';
   });
 }
 
