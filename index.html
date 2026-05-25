@@ -429,6 +429,9 @@ const COLS=[
 let filt=[...DATA],stF='',srtC='GRN Date',srtA=false,pg=1;
 const PP=20;
 
+// ── GOOGLE SHEET ID — must be declared before DOMContentLoaded ──────
+const LIVE_SHEET_ID = '1HgwvZDNzVyjh8uXln3EvH7cX9QebeLsh8YoapSq4jdI';
+
 window.addEventListener('DOMContentLoaded',()=>{
   buildDrops();buildHead();applyF();renderS1();
   // Auto-fetch live data from Google Sheet on page open
@@ -670,9 +673,6 @@ updateScheduleUI();
 setInterval(updateScheduleUI,1000);
 
 // ── LIVE DATA FROM GOOGLE SHEET ──────────────────────────────────
-// Set this to your Google Sheet ID (same as CONFIG.resultsSheetId in .gs file)
-const LIVE_SHEET_ID = '1HgwvZDNzVyjh8uXln3EvH7cX9QebeLsh8YoapSq4jdI';
-
 function loadLiveData(){
   if(!LIVE_SHEET_ID||LIVE_SHEET_ID==='YOUR_GOOGLE_SHEET_ID'){
     showToast('\u26a0 Sheet ID not configured — showing cached data');
