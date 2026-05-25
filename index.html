@@ -1,582 +1,744 @@
-// ═══════════════════════════════════════════════════════════════════
-//  Mosaic Wellness — GRN Shelf Life Compliance
-//  Fully Automated Daily Report via Google Apps Script
-//
-//  Sources (all via Gmail from noreply@e.unicommerce.com):
-//  1. GRN Report
-//  2. Shelfwise Inventory
-//  3. Item Master
-//  4. Batch Details  ← NEW: primary source for Mfg dates
-//
-//  Flow:
-//  Daily 9 AM → fetch 4 CSVs → calculate → write to Google Sheet
-//  Monday only → also send HTML email to all recipients
-//  Dashboard reads live from Google Sheet on every load/refresh
-// ═══════════════════════════════════════════════════════════════════
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GRN Shelf Life Compliance — Mosaic Wellness</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f7f5f2;--surface:#fff;--surface2:#faf9f7;--surface3:#f2efe9;
+  --border:#e8e2d9;--border2:#cec7bb;
+  --ink:#18160f;--ink2:#3d3a32;--ink3:#6b6659;--ink4:#9e9888;
+  --green:#047857;--green-bg:#ecfdf5;--green-border:#6ee7b7;
+  --red:#b91c1c;--red-bg:#fef2f2;--red-border:#fca5a5;
+  --amber:#92400e;--amber-bg:#fffbeb;--amber-border:#fcd34d;
+  --blue:#1e40af;--blue-light:#dbeafe;
+  --shadow-xs:0 1px 2px rgba(0,0,0,.05);
+  --shadow-sm:0 2px 8px rgba(0,0,0,.07),0 1px 3px rgba(0,0,0,.04);
+  --shadow:0 6px 24px rgba(0,0,0,.08),0 2px 8px rgba(0,0,0,.04);
+  --shadow-lg:0 16px 48px rgba(0,0,0,.1),0 4px 16px rgba(0,0,0,.05);
+  --r:16px;--r-sm:10px;--r-xs:7px;
+}
+html{scroll-behavior:smooth}
+body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;font-size:12.5px;line-height:1.5;-webkit-font-smoothing:antialiased}
 
-// ── CONFIG ──────────────────────────────────────────────────────────
-const CONFIG = {
-  dashboardUrl : 'https://vipulkotkar-mosaicwellness.github.io/mosaic-grn-dashboard/',
-  sender       : 'noreply@e.unicommerce.com',
+/* TOPBAR */
+.topbar{position:sticky;top:0;z-index:300;background:rgba(255,255,255,.9);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-bottom:1px solid var(--border);padding:0 32px;display:flex;align-items:center;justify-content:space-between;height:54px;gap:20px}
+.brand{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.brand-mark{width:32px;height:32px;border-radius:8px;background:var(--ink);display:flex;align-items:center;justify-content:center}
+.brand-mark svg{width:16px;height:16px;fill:none;stroke:#fff;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.brand-text{}
+.brand-name{font-family:'Space Grotesk',sans-serif;font-size:15px;font-weight:700;color:var(--ink);letter-spacing:-.3px;line-height:1.2}
+.brand-sub{font-size:10px;color:var(--ink4);font-family:'JetBrains Mono',monospace;letter-spacing:.1px}
+.nav{display:flex;align-items:center;background:var(--surface3);border:1px solid var(--border);border-radius:10px;padding:3px;gap:2px}
+.nav-tab{padding:6px 18px;border-radius:8px;font-size:11.5px;font-weight:500;color:var(--ink3);cursor:pointer;transition:all .22s cubic-bezier(.4,0,.2,1);letter-spacing:-.1px;white-space:nowrap;font-family:'Inter',sans-serif}
+.nav-tab:hover{color:var(--ink);background:rgba(255,255,255,.6)}
+.nav-tab.active{background:var(--surface);color:var(--ink);box-shadow:var(--shadow-xs),0 0 0 1px var(--border);font-weight:600}
+.topbar-right{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.date-badge{font-size:10.5px;color:var(--ink3);font-family:'JetBrains Mono',monospace;padding:4px 9px;background:var(--surface3);border:1px solid var(--border);border-radius:6px}
+.refresh-btn{display:flex;align-items:center;gap:5px;padding:6px 12px;border-radius:7px;border:1.5px solid var(--border2);background:var(--surface);font-size:11.5px;font-weight:500;color:var(--ink2);cursor:pointer;transition:all .2s;font-family:'Inter',sans-serif}
+.refresh-btn:hover{border-color:var(--ink);color:var(--ink);box-shadow:var(--shadow-xs)}
+.refresh-btn svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;transition:transform .3s}
+.refresh-btn.spin svg{animation:spin .7s linear infinite}
+.refresh-btn:disabled{opacity:.45;cursor:not-allowed;transform:none!important;box-shadow:none!important}
+.refresh-btn.ready{border-color:#047857;color:#047857;background:#ecfdf5}
+.refresh-btn.ready:hover{border-color:#047857;background:#d1fae5;box-shadow:0 2px 8px rgba(4,120,87,.15)}
+.schedule-block{display:flex;flex-direction:column;align-items:flex-end;gap:1px;padding:4px 10px;background:var(--surface3);border:1px solid var(--border);border-radius:7px;min-width:130px}
+.schedule-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--ink4);font-family:'JetBrains Mono',monospace}
+.schedule-val{font-size:10.5px;font-weight:600;color:var(--ink2);font-family:'JetBrains Mono',monospace;white-space:nowrap}
+.schedule-val.countdown{color:var(--amber)}
+.schedule-val.ready{color:var(--green)}
+.live-pill.scheduled{background:#f0f0ff;border-color:#c7d2fe}
+.live-pill.scheduled .live-dot{background:#6366f1;box-shadow:none;animation:none}
+.live-pill.scheduled span{color:#4f46e5}
+.live-pill.live-now{background:var(--green-bg);border-color:var(--green-border)}
+.live-pill.live-now .live-dot{background:#047857;animation:pulse 2s ease infinite}
+.live-pill.live-now span{color:#047857}
+@keyframes spin{to{transform:rotate(360deg)}}
+.live-pill{display:flex;align-items:center;gap:5px;padding:4px 9px;border-radius:20px;background:var(--green-bg);border:1px solid var(--green-border);font-size:9.5px;font-weight:600;color:var(--green);font-family:'JetBrains Mono',monospace;letter-spacing:.3px}
+.live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s ease infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(4,120,87,.4)}60%{box-shadow:0 0 0 7px rgba(4,120,87,0)}}
 
-  // ⚠️ REQUIRED: Create a Google Sheet, share it publicly (View),
-  // paste its ID here (the long string in the URL)
-  resultsSheetId : 'YOUR_GOOGLE_SHEET_ID',
+/* SCREENS */
+.screen{display:none}
+.screen.active{display:block;animation:screenIn .5s cubic-bezier(.22,1,.36,1) both}
+@keyframes screenIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
 
-  recipients : [
-    'vipul@mosaicwellness.in',
-    'abhinav@mosaicwellness.in',
-    'vaishnavi.chinke@mosaicwellness.in',
-    'shashank.upadhyay@mosaicwellness.in',
-  ],
+/* ─ SUMMARY ─ */
+.s1{padding:18px 32px 36px}
+.s1-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
 
-  subjects: {
-    grn          : 'Export Job Complete - GRN',
-    shelfwise    : 'Export Job Complete - Shelfwise Inventory',
-    itemMaster   : 'Export Job Complete - Item Master',
-    batchDetails : 'Export Job Complete - Batch details',
-  },
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 18px 14px;position:relative;overflow:hidden;cursor:default;transition:transform .3s cubic-bezier(.34,1.56,.64,1),box-shadow .3s}
+.kpi:hover{transform:translateY(-3px);box-shadow:var(--shadow)}
+.kpi-bar{position:absolute;top:0;left:0;right:0;height:3px;border-radius:var(--r) var(--r) 0 0;transition:opacity .3s}
+.kpi.c-ink .kpi-bar{background:linear-gradient(90deg,#18160f 0%,#6b6659 100%)}
+.kpi.c-green .kpi-bar{background:linear-gradient(90deg,#047857 0%,#34d399 100%)}
+.kpi.c-red .kpi-bar{background:linear-gradient(90deg,#b91c1c 0%,#f87171 100%)}
+.kpi.c-amber .kpi-bar{background:linear-gradient(90deg,#92400e 0%,#fcd34d 100%)}
+.kpi-icon{width:28px;height:28px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:13px;margin-bottom:10px}
+.kpi.c-ink .kpi-icon{background:#f5f3ef}
+.kpi.c-green .kpi-icon{background:var(--green-bg)}
+.kpi.c-red .kpi-icon{background:var(--red-bg)}
+.kpi.c-amber .kpi-icon{background:var(--amber-bg)}
+.kpi-label{font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:var(--ink4);margin-bottom:6px}
+.kpi-val{font-family:'Space Grotesk',sans-serif;font-size:28px;font-weight:700;line-height:1;letter-spacing:-.3px;margin-bottom:6px;font-variant-numeric:tabular-nums}
+.kpi.c-ink .kpi-val{color:var(--ink)}
+.kpi.c-green .kpi-val{color:var(--green)}
+.kpi.c-red .kpi-val{color:var(--red)}
+.kpi.c-amber .kpi-val{color:var(--amber)}
+.kpi-note{font-size:11px;color:var(--ink4);line-height:1.35}
+.kpi-badge{display:inline-block;margin-top:6px;font-size:10px;font-weight:600;font-family:'JetBrains Mono',monospace;padding:1px 8px;border-radius:20px}
+.kpi.c-green .kpi-badge{background:var(--green-bg);color:var(--green)}
+.kpi.c-red .kpi-badge{background:var(--red-bg);color:var(--red)}
+.kpi.c-amber .kpi-badge{background:var(--amber-bg);color:var(--amber)}
 
-  emailWindowStart : 8,   // 8 AM IST
-  emailWindowEnd   : 10,  // 10 AM IST
-  tolerance        : 29,  // ±29 days = Matching
-  rtvKeyword       : 'RTV',
-};
+/* insight strip removed */
 
-const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+/* CHART ROW */
+.s1-charts3{display:grid;grid-template-columns:260px 3fr 2fr;gap:12px;align-items:start}
+.compliance-card{}
+.method-box{background:var(--surface3);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-top:14px;position:relative;overflow:hidden}
+.method-box::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(180deg,#047857,#b91c1c)}
+.method-title{font-family:'Space Grotesk',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:var(--ink4);margin-bottom:12px;display:flex;align-items:center;gap:7px}
+.method-title span{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;background:var(--ink);border-radius:50%;color:#fff;font-size:9px;flex-shrink:0}
+.method-row{display:flex;align-items:flex-start;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)}
+.method-row:last-child{border-bottom:none}
+.method-pill{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:20px;font-size:9.5px;font-weight:700;white-space:nowrap;flex-shrink:0;font-family:'Space Grotesk',sans-serif;margin-top:1px}
+.method-pill.m{background:var(--green-bg);color:var(--green);border:1px solid var(--green-border)}
+.method-pill.d{background:var(--red-bg);color:var(--red);border:1px solid var(--red-border)}
+.method-pill.f{background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe}
+.method-pill.x{background:var(--surface);color:var(--ink3);border:1px solid var(--border2)}
+.method-desc{font-size:11px;color:var(--ink3);line-height:1.5}
+.method-desc strong{color:var(--ink2);font-weight:600}
+.method-scope{display:flex;flex-wrap:wrap;gap:5px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+.method-tag{font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--ink4);background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:2px 8px}
+.donut-wrap{display:flex;flex-direction:column;align-items:center;gap:16px;margin-top:4px}
+.donut-ring-wrap{position:relative;width:160px;height:160px;flex-shrink:0}
+.donut-ring-wrap canvas{display:block}
+.donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.donut-pct{font-family:'Space Grotesk',sans-serif;font-size:22px;font-weight:700;color:var(--green);letter-spacing:-.3px;line-height:1;font-variant-numeric:tabular-nums}
+.donut-lbl{font-size:9px;color:var(--ink4);text-transform:uppercase;letter-spacing:.6px;margin-top:3px}
+.donut-legend{width:100%;border-top:1px solid var(--border);padding-top:12px}
+.dl-row{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)}
+.dl-row:last-child{border-bottom:none}
+.dl-l{display:flex;align-items:center;gap:8px}
+.dl-swatch{width:10px;height:10px;border-radius:3px;flex-shrink:0}
+.dl-name{font-size:12px;color:var(--ink2);font-weight:500}
+.dl-r{display:flex;align-items:center;gap:10px}
+.dl-n{font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:var(--ink)}
+.dl-p{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--ink4);background:var(--surface3);padding:1px 6px;border-radius:20px}
+.compliance-note{font-size:10.5px;color:var(--ink4);text-align:center;margin-top:8px;line-height:1.4}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;box-shadow:var(--shadow-xs);transition:box-shadow .3s}
+.card:hover{box-shadow:var(--shadow-sm)}
+.card-title{font-family:'Space Grotesk',sans-serif;font-size:13.5px;font-weight:600;letter-spacing:-.2px;margin-bottom:3px}
+.card-sub{font-size:11px;color:var(--ink4);margin-bottom:14px}
+.card-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:14px}
+.card-header-left .card-title{margin-bottom:3px}
+.card-header-left .card-sub{margin-bottom:0}
+.card-badge{font-size:9.5px;font-weight:600;font-family:'JetBrains Mono',monospace;padding:2px 8px;border-radius:20px;background:var(--red-bg);color:var(--red);border:1px solid var(--red-border);flex-shrink:0}
 
-// ── ENTRY POINT — runs daily, emails only on Monday ──────────────────
-function runDailyReport() {
-  const nowIST   = new Date(Date.now() + IST_OFFSET_MS);
-  const isMonday = nowIST.getUTCDay() === 1;
+/* gauge replaced by donut */
 
-  Logger.log(`── GRN Daily Report | ${nowIST.toUTCString()} | Monday: ${isMonday} ──`);
+/* dist removed */
 
-  try {
-    const results = processData_(false);
-    if (!results) return;
+/* BAR CHART */
+.bar-chart{display:flex;flex-direction:column;gap:7px}
+.bar-row{display:flex;align-items:center;gap:10px}
+.bar-lbl{width:150px;font-size:11px;color:var(--ink2);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar-track{flex:1;height:6px;background:var(--surface3);border-radius:4px;overflow:hidden;position:relative}
+.bar-fill{height:100%;border-radius:4px;width:0;transition:width 1s cubic-bezier(.16,1,.3,1)}
+.bar-fill::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.3))}
+.bar-n{font-family:'JetBrains Mono',monospace;font-size:10.5px;font-weight:500;color:var(--ink3);width:22px;text-align:right;flex-shrink:0}
 
-    const { data, stats, weekRange } = results;
+/* ── TOP 5 SKU ROWS ─────────────────────────────────────── */
+.sku-row{display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--border)}
+.sku-row:last-child{border-bottom:none}
+.sku-meta{flex:1;min-width:0;overflow:hidden}
+.sku-code{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:600;color:#1e40af;letter-spacing:.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
+.sku-name{font-size:10.5px;color:var(--ink2);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.35}
+.sku-right{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.sku-count{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;color:#b91c1c;min-width:18px;text-align:right}
+.sku-bar-track{width:72px;height:7px;background:#f0ede8;border-radius:4px;overflow:hidden;flex-shrink:0}
+.sku-bar-inner{height:100%;border-radius:4px;background:linear-gradient(90deg,#fcd34d,#b91c1c);width:0;transition:width .95s cubic-bezier(.16,1,.3,1)}
 
-    // Always write to Google Sheet (dashboard reads from here)
-    writeToSheet_(data, stats, weekRange);
 
-    // Email only on Monday
-    if (!isMonday) {
-      Logger.log('Not Monday — sheet updated, email skipped.');
-      return;
-    }
 
-    sendEmail_(stats, weekRange);
+/* ─ DETAILS ─ */
+.s2{padding:18px 32px 40px}
+.det-topbar{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:14px;gap:16px;flex-wrap:wrap}
+.det-title{font-family:'Space Grotesk',sans-serif;font-size:19px;font-weight:700;letter-spacing:-.4px}
+.det-sub{font-size:11.5px;color:var(--ink4);margin-top:2px}
+.export-btn{display:flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;background:var(--ink);color:#fff;font-size:12px;font-weight:600;border:none;cursor:pointer;box-shadow:0 2px 8px rgba(24,22,15,.22);transition:all .22s;font-family:'Inter',sans-serif;flex-shrink:0}
+.export-btn:hover{background:#2d2b22;box-shadow:0 5px 16px rgba(24,22,15,.28);transform:translateY(-1px)}
+.export-btn:active{transform:none}
+.export-btn svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
 
-  } catch (err) {
-    Logger.log('ERROR: ' + err.message);
-    MailApp.sendEmail({
-      to      : 'vipul@mosaicwellness.in',
-      subject : `⚠️ GRN Report Error — ${new Date().toDateString()}`,
-      body    : `Error: ${err.message}\n\nCheck Apps Script logs at script.google.com`,
-    });
-  }
+.filter-bar{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;box-shadow:var(--shadow-xs)}
+.filter-lbl{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:var(--ink4);white-space:nowrap}
+.fsep{width:1px;height:20px;background:var(--border);margin:0 2px;flex-shrink:0}
+.chips{display:flex;gap:4px}
+.chip{padding:4px 11px;border-radius:20px;font-size:10.5px;font-weight:600;cursor:pointer;border:1.5px solid var(--border2);background:var(--surface2);color:var(--ink3);transition:all .17s;font-family:'Inter',sans-serif;white-space:nowrap}
+.chip:hover{border-color:var(--ink2);color:var(--ink)}
+.chip.on.all{background:var(--ink);color:#fff;border-color:var(--ink)}
+.chip.on.match{background:var(--green-bg);color:var(--green);border-color:var(--green-border)}
+.chip.on.dev{background:var(--red-bg);color:var(--red);border-color:var(--red-border)}
+.chip.on.warn{background:var(--amber-bg);color:var(--amber);border-color:var(--amber-border)}
+.f-sel,.f-inp{padding:6px 10px;border-radius:7px;border:1.5px solid var(--border2);background:var(--surface);color:var(--ink);font-size:11.5px;font-family:'Inter',sans-serif;outline:none;transition:border-color .17s;min-width:140px}
+.f-sel:focus,.f-inp:focus{border-color:var(--ink2)}
+.f-inp{min-width:200px}
+.f-inp::placeholder{color:var(--ink4)}
+.reset-btn{margin-left:auto;padding:5px 10px;border-radius:7px;border:1.5px solid var(--border2);background:transparent;font-size:10.5px;color:var(--ink4);cursor:pointer;font-family:'Inter',sans-serif;transition:all .17s}
+.reset-btn:hover{border-color:var(--red);color:var(--red)}
+
+.tbl-meta{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px}
+.tbl-count{font-size:11.5px;color:var(--ink4);font-family:'JetBrains Mono',monospace}
+.tbl-pages{font-size:11px;color:var(--ink4)}
+
+.tbl-shell{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--shadow-xs)}
+.tbl-scroller{overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:1080px}
+thead tr{background:var(--surface2);border-bottom:1.5px solid var(--border2)}
+th{padding:9px 12px;text-align:left;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:var(--ink4);white-space:nowrap;cursor:pointer;user-select:none;transition:color .15s}
+th:hover{color:var(--ink2)}
+th.sorted{color:var(--ink2)}
+.th-in{display:flex;align-items:center;gap:4px}
+.sort-ic{font-size:9px;opacity:.3;transition:opacity .15s}
+th.sorted .sort-ic{opacity:1}
+tbody tr{border-bottom:1px solid var(--border);transition:background .1s;animation:rowIn .35s cubic-bezier(.22,1,.36,1) both}
+@keyframes rowIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
+tbody tr:nth-child(1){animation-delay:.02s}tbody tr:nth-child(2){animation-delay:.04s}tbody tr:nth-child(3){animation-delay:.06s}tbody tr:nth-child(4){animation-delay:.08s}tbody tr:nth-child(5){animation-delay:.10s}tbody tr:nth-child(6){animation-delay:.12s}tbody tr:nth-child(7){animation-delay:.14s}tbody tr:nth-child(8){animation-delay:.16s}tbody tr:nth-child(9){animation-delay:.18s}tbody tr:nth-child(10){animation-delay:.20s}
+tbody tr:hover{background:var(--surface2)}
+tbody tr:last-child{border-bottom:none}
+td{padding:8px 12px;font-size:11.5px;color:var(--ink2);white-space:nowrap;vertical-align:middle}
+td.td-grn{font-family:'JetBrains Mono',monospace;font-size:10.5px;font-weight:500;color:var(--blue)}
+td.td-sku{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--ink3)}
+td.td-name{max-width:190px;overflow:hidden;text-overflow:ellipsis;font-weight:500;color:var(--ink)}
+td.td-mono{font-family:'JetBrains Mono',monospace;font-size:10.5px}
+td.td-r{text-align:right;font-family:'JetBrains Mono',monospace;font-size:11.5px}
+td.td-pos{color:var(--amber);font-weight:600;font-family:'JetBrains Mono',monospace;text-align:right}
+td.td-neg{color:var(--red);font-weight:600;font-family:'JetBrains Mono',monospace;text-align:right}
+td.td-zero{color:var(--green);font-weight:600;font-family:'JetBrains Mono',monospace;text-align:right}
+.pill{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:20px;font-size:9px;font-weight:700;letter-spacing:.4px;font-family:'Inter',sans-serif}
+.pill-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.pill.pm{background:var(--green-bg);color:var(--green);border:1px solid var(--green-border)}
+.pill.pd{background:var(--red-bg);color:var(--red);border:1px solid var(--red-border)}
+.pill.pw{background:var(--amber-bg);color:var(--amber);border:1px solid var(--amber-border)}
+
+.pag{display:flex;align-items:center;justify-content:center;gap:4px;padding:12px;border-top:1px solid var(--border);background:var(--surface2)}
+.pg{width:28px;height:28px;border-radius:7px;border:1.5px solid var(--border2);background:var(--surface);font-size:11px;color:var(--ink3);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .14s;font-family:'JetBrains Mono',monospace;font-weight:500}
+.pg:hover:not([disabled]){border-color:var(--ink2);color:var(--ink)}
+.pg[disabled]{opacity:.3;cursor:not-allowed}
+.pg.on{background:var(--ink);color:#fff;border-color:var(--ink);font-weight:700}
+.pg-gap{font-size:10.5px;color:var(--ink4);padding:0 3px}
+
+.empty{padding:48px;text-align:center}
+.empty h3{font-family:'Space Grotesk',sans-serif;font-size:18px;color:var(--ink3);margin-bottom:5px}
+.empty p{font-size:12.5px;color:var(--ink4)}
+
+.toast{position:fixed;bottom:24px;right:24px;z-index:999;background:var(--ink);color:#fff;padding:12px 18px;border-radius:10px;font-size:12.5px;font-weight:500;box-shadow:var(--shadow-lg);transform:translateY(16px);opacity:0;transition:all .32s cubic-bezier(.22,1,.36,1);pointer-events:none}
+.toast.show{transform:none;opacity:1}
+
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <img src="data:image/png;base64,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" alt="Mosaic Wellness" style="height:32px;width:auto;object-fit:contain;display:block">
+    <div class="brand-sub" style="font-size:10px;color:var(--ink4);font-family:'JetBrains Mono',monospace;margin-left:2px;white-space:nowrap">GRN · Shelf Life Compliance</div>
+  </div>
+  <div class="nav">
+    <div class="nav-tab active" id="tab-s1" onclick="goTab('s1')">Summary</div>
+    <div class="nav-tab" id="tab-s2" onclick="goTab('s2')">SKU-wise Details</div>
+  </div>
+  <div class="topbar-right">
+    <div class="date-badge">May 11 – 17, 2026</div>
+    <button class="refresh-btn" id="rfBtn" onclick="doRefresh()">
+      <svg viewBox="0 0 24 24"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0115.3-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 01-15.3 6.7L3 16"/></svg>
+      Refresh
+    </button>
+    <div class="live-pill"><div class="live-dot"></div>LIVE</div>
+  </div>
+</div>
+
+<!-- SCREEN 1: SUMMARY -->
+<div class="screen active" id="screen-s1">
+<div class="s1">
+
+  <div class="s1-kpis">
+    <div class="kpi c-ink"><div class="kpi-bar"></div><div class="kpi-icon">📦</div><div class="kpi-label">GRN Lines Processed</div><div class="kpi-val" id="kv0">0</div><div class="kpi-note">Fresh inward · 7-day window · Live SKUs only</div></div>
+    <div class="kpi c-green"><div class="kpi-bar"></div><div class="kpi-icon">✅</div><div class="kpi-label">Shelf Life Matching</div><div class="kpi-val" id="kv1">0</div><div class="kpi-note">Actual = Standard shelf life</div><div class="kpi-badge" id="kb1">—</div></div>
+    <div class="kpi c-red"><div class="kpi-bar"></div><div class="kpi-icon">⚠️</div><div class="kpi-label">Deviations Found</div><div class="kpi-val" id="kv2">0</div><div class="kpi-note">Actual ≠ Standard shelf life</div><div class="kpi-badge" id="kb2">—</div></div>
+    <div class="kpi c-amber"><div class="kpi-bar"></div><div class="kpi-icon">🔍</div><div class="kpi-label">Mfg Date Missing</div><div class="kpi-val" id="kv3">0</div><div class="kpi-note">Batch not found in Inventory</div><div class="kpi-badge" id="kb3">— vendor batches</div></div>
+  </div>
+
+
+
+  <div class="s1-charts3">
+
+    <!-- COL 1: COMPLIANCE DONUT -->
+    <div class="card compliance-card">
+      <div class="card-title">Compliance Overview</div>
+      <div class="card-sub">Shelf life accuracy vs Item Master standard</div>
+      <div class="donut-wrap">
+        <div class="donut-ring-wrap">
+          <canvas id="gaugeC" width="160" height="160"></canvas>
+          <div class="donut-center">
+            <div class="donut-pct" id="gpct">—</div>
+            <div class="donut-lbl">Match Rate</div>
+          </div>
+        </div>
+        <div class="donut-legend" id="legend"></div>
+      </div>
+      <div class="compliance-note" id="compNote"></div>
+    </div>
+
+    <!-- COL 2: VENDORS + SKUS STACKED -->
+    <div style="display:flex;flex-direction:column;gap:10px">
+
+      <!-- TOP 5 VENDORS -->
+      <div class="card" style="padding:16px 18px">
+        <div class="card-header" style="margin-bottom:12px">
+          <div class="card-header-left">
+            <div class="card-title" style="font-size:12.5px">Top 5 Vendors — Deviations</div>
+            <div class="card-sub" style="margin-bottom:0;font-size:10.5px">GRN lines with shelf life mismatch</div>
+          </div>
+          <div class="card-badge" id="vBadge">—</div>
+        </div>
+        <div class="bar-chart" id="vBars"></div>
+      </div>
+
+      <!-- TOP 5 SKUS -->
+      <div class="card" style="padding:16px 18px">
+        <div class="card-header" style="margin-bottom:12px">
+          <div class="card-header-left">
+            <div class="card-title" style="font-size:12.5px">Top 5 SKUs — Deviations</div>
+            <div class="card-sub" style="margin-bottom:0;font-size:10.5px">Item name &amp; SKU code · most flagged</div>
+          </div>
+          <div class="card-badge" id="sBadge">—</div>
+        </div>
+        <div id="sBars"></div>
+      </div>
+
+    </div>
+
+    <!-- COL 3: METHODOLOGY -->
+    <div class="method-box-side">
+      <div class="method-title" style="padding-left:6px"><span>ƒ</span>Methodology &amp; Data Rules</div>
+
+      <div class="method-row">
+        <span class="method-pill m">✓ Match</span>
+        <div class="method-desc">Within <strong>±29 days</strong> of Item Master standard — compliant (≤ 1 month tolerance)</div>
+      </div>
+
+      <div class="method-row">
+        <span class="method-pill d">⚠ Deviation</span>
+        <div class="method-desc">Differs by <strong>&gt;29 days</strong> either direction — vendor action or Item Master review needed</div>
+      </div>
+
+      <div class="method-row">
+        <span class="method-pill f">⊘ Excluded</span>
+        <div class="method-desc">Vendor Name contains <strong>"RTV"</strong> — return-to-vendor, not fresh inward</div>
+      </div>
+
+      <div class="method-row">
+        <span class="method-pill x">∑ Formula</span>
+        <div class="method-desc"><strong>Actual SL</strong> = Expiry − Mfg Date<br><strong>Deviation</strong> = Actual − Standard SL<br>Standard SL from Item Master</div>
+      </div>
+
+      <div class="method-scope" style="margin-top:12px">
+        <span class="method-tag">📅 Last 7 days GRN</span>
+        <span class="method-tag">🔄 Every Monday</span>
+        <span class="method-tag">📦 Live SKUs only</span>
+        <span class="method-tag">⚖️ ±29d tolerance</span>
+        <span class="method-tag">🔗 GRN + Shelfwise + Item Master</span>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+</div>
+
+<!-- SCREEN 2: DETAILS -->
+<div class="screen" id="screen-s2">
+<div class="s2">
+  <div class="det-topbar">
+    <div><div class="det-title">SKU-wise GRN Detail</div><div class="det-sub" id="detSub">All 130 records · GRN Code + Vendor SKU granularity</div></div>
+    <button class="export-btn" onclick="exportCSV()">
+      <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Export CSV
+    </button>
+  </div>
+
+  <div class="filter-bar">
+    <div class="filter-lbl">Status</div>
+    <div class="chips">
+      <span class="chip all on" onclick="setStatus('')">All</span>
+      <span class="chip match" onclick="setStatus('Matching')">✓ Matching</span>
+      <span class="chip dev" onclick="setStatus('Deviation')">⚠ Deviation</span>
+      <span class="chip warn" onclick="setStatus('Mfg Date Not Found')">Missing Mfg</span>
+    </div>
+    <div class="fsep"></div>
+    <select class="f-sel" id="vendSel" onchange="applyF()"><option value="">All Vendors</option></select>
+    <select class="f-sel" id="facSel" onchange="applyF()"><option value="">All Facilities</option></select>
+    <input class="f-inp" id="srchBox" placeholder="Search SKU code or item name…" oninput="applyF()">
+    <button class="reset-btn" onclick="resetF()">↺ Reset</button>
+  </div>
+
+  <div class="tbl-meta">
+    <div class="tbl-count" id="tblCount"></div>
+    <div class="tbl-pages" id="tblPgs"></div>
+  </div>
+  <div class="tbl-shell">
+    <div class="tbl-scroller">
+      <table><thead><tr id="thead"></tr></thead><tbody id="tbody"></tbody></table>
+    </div>
+    <div class="pag" id="pag"></div>
+  </div>
+</div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const DATA=[{"GRN Code":"G0292","GRN Date":"2026-05-13","Item SkuCode":"MWMMHRP.0002.AAAA.B0_N","Item Type Name":"MM Hair Strengthening Serum 90ml","Vendor Name":"BILI LIFE SCIENCE LLP","Vendor Batch Number":"3EM26","Expiry Date":"2028-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G8262","GRN Date":"2026-05-14","Item SkuCode":"MWMMHRP.0004.AAAA.B0_N","Item Type Name":"MM Hair Gummies 30s","Vendor Name":"ADVAMA PRIVATE LIMITED","Vendor Batch Number":"MBT1226159","Expiry Date":"2027-10-31","Manufacturing":"2026-05-01","Actual Shelf Life (days)":548,"Standard Shelf Life (days)":540,"Deviation (days)":8,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8263","GRN Date":"2026-05-14","Item SkuCode":"MWMMHRP.0004.AAAA.B0_N","Item Type Name":"MM Hair Gummies 30s","Vendor Name":"ADVAMA PRIVATE LIMITED","Vendor Batch Number":"MBT1256163","Expiry Date":"2027-10-31","Manufacturing":"2026-05-01","Actual Shelf Life (days)":548,"Standard Shelf Life (days)":540,"Deviation (days)":8,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8264","GRN Date":"2026-05-14","Item SkuCode":"MWMMHRP.0004.AAAA.B0_N","Item Type Name":"MM Hair Gummies 30s","Vendor Name":"ADVAMA PRIVATE LIMITED","Vendor Batch Number":"MBT1226159","Expiry Date":"2027-10-31","Manufacturing":"2026-05-01","Actual Shelf Life (days)":548,"Standard Shelf Life (days)":540,"Deviation (days)":8,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8270","GRN Date":"2026-05-15","Item SkuCode":"MWMMHRP.2050.AAAA.B0_N","Item Type Name":"MM Activator Regular Black 0.5mm","Vendor Name":"ECOM","Vendor Batch Number":"V1-04-1","Expiry Date":"2031-04-30","Manufacturing":"2025-04-30","Actual Shelf Life (days)":2191,"Standard Shelf Life (days)":1800,"Deviation (days)":391,"Status":"Deviation","Facility":"SL Ambient"},{"GRN Code":"G8271","GRN Date":"2026-05-15","Item SkuCode":"MWMMHRP.2050.AAAA.B0_N","Item Type Name":"MM Activator Regular Black 0.5mm","Vendor Name":"ECOM","Vendor Batch Number":"V1-04-1","Expiry Date":"2031-04-30","Manufacturing":"2025-04-30","Actual Shelf Life (days)":2191,"Standard Shelf Life (days)":1800,"Deviation (days)":391,"Status":"Deviation","Facility":"SL Ambient"},{"GRN Code":"G8272","GRN Date":"2026-05-15","Item SkuCode":"MWMMHRP.2050.AAAA.B0_N","Item Type Name":"MM Activator Regular Black 0.5mm","Vendor Name":"ECOM","Vendor Batch Number":"V1-04-1","Expiry Date":"2031-04-30","Manufacturing":"2025-04-30","Actual Shelf Life (days)":2191,"Standard Shelf Life (days)":1800,"Deviation (days)":391,"Status":"Deviation","Facility":"SL Ambient"},{"GRN Code":"G0288","GRN Date":"2026-05-16","Item SkuCode":"MWMMHRP.0008.AAAA.B0_R","Item Type Name":"MM Minoxifin 60ml","Vendor Name":"PONTIKA AEROTECH LIMITED","Vendor Batch Number":"MFI26006","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL RX"},{"GRN Code":"G8239","GRN Date":"2026-05-11","Item SkuCode":"MWBWSKP.00132.B0_N","Item Type Name":"BW Collagen Builder Gummies 60s","Vendor Name":"ADVAMA PRIVATE LIMITED","Vendor Batch Number":"BCG1206157","Expiry Date":"2027-09-30","Manufacturing":"2026-04-01","Actual Shelf Life (days)":547,"Standard Shelf Life (days)":540,"Deviation (days)":7,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G0311","GRN Date":"2026-05-15","Item SkuCode":"MWLJDCP.0001.B0_N","Item Type Name":"Littlejoys Fluoride Free Toothpaste 60g","Vendor Name":"ZYMO COSMETICS","Vendor Batch Number":"BC774","Expiry Date":"2028-04-30","Manufacturing":"2026-05-08","Actual Shelf Life (days)":723,"Standard Shelf Life (days)":720,"Deviation (days)":3,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0312","GRN Date":"2026-05-15","Item SkuCode":"MWLJDCP.0001.B0_N","Item Type Name":"Littlejoys Fluoride Free Toothpaste 60g","Vendor Name":"ZYMO COSMETICS","Vendor Batch Number":"BC775","Expiry Date":"2028-04-30","Manufacturing":"2026-05-08","Actual Shelf Life (days)":723,"Standard Shelf Life (days)":720,"Deviation (days)":3,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G8252","GRN Date":"2026-05-13","Item SkuCode":"MWMMBDP.0006.AAAA.B0_N","Item Type Name":"MM Beard Gummies 30s","Vendor Name":"ADVAMA PRIVATE LIMITED","Vendor Batch Number":"MBG1186153","Expiry Date":"2027-09-30","Manufacturing":"2026-04-01","Actual Shelf Life (days)":547,"Standard Shelf Life (days)":540,"Deviation (days)":7,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8245","GRN Date":"2026-05-12","Item SkuCode":"MWLJNTP.0003.B0_N","Item Type Name":"LJ NutriMix 2+ 350gm Chocolate Jar","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLMMRE023","Expiry Date":"2027-03-12","Manufacturing":"2026-03-13","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G0316","GRN Date":"2026-05-15","Item SkuCode":"MWLJNTP.0003.B0_N","Item Type Name":"LJ NutriMix 2+ 350gm Chocolate Jar","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLMMRE023","Expiry Date":"2027-03-12","Manufacturing":"2026-03-13","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0320","GRN Date":"2026-05-16","Item SkuCode":"MWLJNTP.0003.B0_N","Item Type Name":"LJ NutriMix 2+ 350gm Chocolate Jar","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLMMRN989","Expiry Date":"2027-05-07","Manufacturing":"2026-05-08","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G8267","GRN Date":"2026-05-15","Item SkuCode":"MWBWSKP.00206.B0_N","Item Type Name":"BB Face Razor (3 Pack)","Vendor Name":"ECOM","Vendor Batch Number":"BFR-03","Expiry Date":"2030-02-28","Manufacturing":"2024-03-01","Actual Shelf Life (days)":2190,"Standard Shelf Life (days)":1800,"Deviation (days)":390,"Status":"Deviation","Facility":"SL Ambient"},{"GRN Code":"G8268","GRN Date":"2026-05-15","Item SkuCode":"MWBWSKP.00206.B0_N","Item Type Name":"BB Face Razor (3 Pack)","Vendor Name":"ECOM","Vendor Batch Number":"BFR-03","Expiry Date":"2030-02-28","Manufacturing":"2024-03-01","Actual Shelf Life (days)":2190,"Standard Shelf Life (days)":1800,"Deviation (days)":390,"Status":"Deviation","Facility":"SL Ambient"},{"GRN Code":"G0267","GRN Date":"2026-05-12","Item SkuCode":"MWBWSKP.00418.B0_N","Item Type Name":"BeBodywise 4% AHA BHA Underarm Roll On","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6183","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G8240","GRN Date":"2026-05-12","Item SkuCode":"MWLJNTP.00059.B0_N","Item Type Name":"LJ NutriMix 7+ 350gm Chocolate Jar","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLPMNN547","Expiry Date":"2027-05-05","Manufacturing":"2026-05-06","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8241","GRN Date":"2026-05-12","Item SkuCode":"MWLJNTP.00059.B0_N","Item Type Name":"LJ NutriMix 7+ 350gm Chocolate Jar","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLPMNE011","Expiry Date":"2027-03-12","Manufacturing":"2026-03-13","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G0315","GRN Date":"2026-05-15","Item SkuCode":"MWLJNTP.00059.B0_N","Item Type Name":"LJ NutriMix 7+ 350gm Chocolate Jar","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLPMNE011","Expiry Date":"2027-03-12","Manufacturing":"2026-03-13","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0328","GRN Date":"2026-05-17","Item SkuCode":"MWLJNTP.00059.B0_N","Item Type Name":"LJ NutriMix 7+ 350gm Chocolate Jar","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLPMNN547","Expiry Date":"2027-05-05","Manufacturing":"2026-05-06","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0271","GRN Date":"2026-05-12","Item SkuCode":"MWBWSKP.00428.B0_N","Item Type Name":"BB 10% AHA Scrub","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6161","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0272","GRN Date":"2026-05-12","Item SkuCode":"MWBWSKP.00428.B0_N","Item Type Name":"BB 10% AHA Scrub","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6213","Expiry Date":"2028-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0273","GRN Date":"2026-05-12","Item SkuCode":"MWBWSKP.00428.B0_N","Item Type Name":"BB 10% AHA Scrub","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6215","Expiry Date":"2028-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0280","GRN Date":"2026-05-12","Item SkuCode":"MWBWSKP.00436.B0_N","Item Type Name":"BB 5% Pigmentation Cream","Vendor Name":"PONTIKA AEROTECH LIMITED","Vendor Batch Number":"BBP26002","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0281","GRN Date":"2026-05-12","Item SkuCode":"MWBWSKP.00436.B0_N","Item Type Name":"BB 5% Pigmentation Cream","Vendor Name":"PONTIKA AEROTECH LIMITED","Vendor Batch Number":"BBP26003","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0301","GRN Date":"2026-05-15","Item SkuCode":"MWMMHRP.6286.AAAA.B0_N","Item Type Name":"MM Activator Regular Black 1mm","Vendor Name":"ECOM","Vendor Batch Number":"V1-02-1","Expiry Date":"2031-02-28","Manufacturing":"2026-02-28","Actual Shelf Life (days)":1826,"Standard Shelf Life (days)":1800,"Deviation (days)":26,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G8269","GRN Date":"2026-05-15","Item SkuCode":"MWMMHRP.6286.AAAA.B0_N","Item Type Name":"MM Activator Regular Black 1mm","Vendor Name":"ECOM","Vendor Batch Number":"V1-02-1","Expiry Date":"2031-02-28","Manufacturing":"2026-02-28","Actual Shelf Life (days)":1826,"Standard Shelf Life (days)":1800,"Deviation (days)":26,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8253","GRN Date":"2026-05-13","Item SkuCode":"MWLJNTP.00122.B0_N","Item Type Name":"LJ NutriMix 2+ 350gm Vanilla Jar","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLMMVN100","Expiry Date":"2027-05-05","Manufacturing":"2026-05-06","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G0329","GRN Date":"2026-05-17","Item SkuCode":"MWLJNTP.00122.B0_N","Item Type Name":"LJ NutriMix 2+ 350gm Vanilla Jar","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLMMVN100","Expiry Date":"2027-05-05","Manufacturing":"2026-05-06","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0322","GRN Date":"2026-05-16","Item SkuCode":"MWLJNTP.00177.B0_N","Item Type Name":"LJ NutriMix 7+ 350gm Strawberry Jar","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLPMSN050","Expiry Date":"2027-05-07","Manufacturing":"2026-05-08","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":364,"Deviation (days)":0,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G8246","GRN Date":"2026-05-12","Item SkuCode":"MWBWHFP.00575.B0_N","Item Type Name":"BB Hair Growth Serum Roll on 25ml","Vendor Name":"SPRIVIL HEALTHCARE PVT LTD","Vendor Batch Number":"MW5026","Expiry Date":"2028-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8247","GRN Date":"2026-05-12","Item SkuCode":"MWBWHFP.00575.B0_N","Item Type Name":"BB Hair Growth Serum Roll on 25ml","Vendor Name":"SPRIVIL HEALTHCARE PVT LTD","Vendor Batch Number":"MW5026","Expiry Date":"2028-03-31","Manufacturing":"2026-05-01","Actual Shelf Life (days)":700,"Standard Shelf Life (days)":720,"Deviation (days)":-20,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8248","GRN Date":"2026-05-12","Item SkuCode":"MWBWHFP.00575.B0_N","Item Type Name":"BB Hair Growth Serum Roll on 25ml","Vendor Name":"SPRIVIL HEALTHCARE PVT LTD","Vendor Batch Number":"MW5126","Expiry Date":"2028-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G0268","GRN Date":"2026-05-12","Item SkuCode":"MWBWSKP.00584.B0_N","Item Type Name":"BB Sunscreen Spray 100ml","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6195","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0285","GRN Date":"2026-05-12","Item SkuCode":"MWBWSKP.00584.B0_N","Item Type Name":"BB Sunscreen Spray 100ml","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6195","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0317","GRN Date":"2026-05-15","Item SkuCode":"MWBWSKP.00586.B0_N","Item Type Name":"BB 2.5% Benzoyl Peroxide Body Wash 250ml","Vendor Name":"M/S PERCOS INDIA PVT LTD","Vendor Batch Number":"BPB41","Expiry Date":"2027-09-30","Manufacturing":"2026-04-01","Actual Shelf Life (days)":547,"Standard Shelf Life (days)":547,"Deviation (days)":0,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0318","GRN Date":"2026-05-15","Item SkuCode":"MWBWSKP.00586.B0_N","Item Type Name":"BB 2.5% Benzoyl Peroxide Body Wash 250ml","Vendor Name":"M/S PERCOS INDIA PVT LTD","Vendor Batch Number":"BPB42","Expiry Date":"2027-09-30","Manufacturing":"2026-04-01","Actual Shelf Life (days)":547,"Standard Shelf Life (days)":547,"Deviation (days)":0,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G8250","GRN Date":"2026-05-13","Item SkuCode":"MWMMBDP.0132.AAAA.B0_R","Item Type Name":"MM BeardGro Serum 30ml","Vendor Name":"SPRIVIL HEALTHCARE PVT LTD","Vendor Batch Number":"MW5226","Expiry Date":"2028-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8280","GRN Date":"2026-05-17","Item SkuCode":"MWBWHFP.00625.B0_N","Item Type Name":"BB 1% Salicylic Acid Bodywash 700ml","Vendor Name":"BIO HERBAL REMEDIES PVT LTD","Vendor Batch Number":"BBBW-438","Expiry Date":"2029-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":1095,"Standard Shelf Life (days)":1094,"Deviation (days)":1,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8281","GRN Date":"2026-05-17","Item SkuCode":"MWBWHFP.00625.B0_N","Item Type Name":"BB 1% Salicylic Acid Bodywash 700ml","Vendor Name":"BIO HERBAL REMEDIES PVT LTD","Vendor Batch Number":"BBBW-439","Expiry Date":"2029-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":1095,"Standard Shelf Life (days)":1094,"Deviation (days)":1,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8282","GRN Date":"2026-05-17","Item SkuCode":"MWBWHFP.00625.B0_N","Item Type Name":"BB 1% Salicylic Acid Bodywash 700ml","Vendor Name":"BIO HERBAL REMEDIES PVT LTD","Vendor Batch Number":"BBBW-440","Expiry Date":"2029-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":1095,"Standard Shelf Life (days)":1094,"Deviation (days)":1,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8283","GRN Date":"2026-05-17","Item SkuCode":"MWBWHFP.00625.B0_N","Item Type Name":"BB 1% Salicylic Acid Bodywash 700ml","Vendor Name":"BIO HERBAL REMEDIES PVT LTD","Vendor Batch Number":"BBBW-441","Expiry Date":"2029-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":1095,"Standard Shelf Life (days)":1094,"Deviation (days)":1,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8277","GRN Date":"2026-05-16","Item SkuCode":"MWLJNTP.00027.B0_N","Item Type Name":"LJ NutriMix 2+ 350gm Chocolate Pouch","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLMMRN987","Expiry Date":"2027-05-06","Manufacturing":"2026-05-07","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G0065","GRN Date":"2026-05-12","Item SkuCode":"MWBWUSAPRP.00003.B0_N","Item Type Name":"BW USA Shilajit Gummies Pack of 60","Vendor Name":"ADVAMA PRIVATE LIMITED","Vendor Batch Number":"BSH1216158","Expiry Date":"2027-10-31","Manufacturing":"2026-05-01","Actual Shelf Life (days)":548,"Standard Shelf Life (days)":540,"Deviation (days)":8,"Status":"Matching","Facility":"Aramex"},{"GRN Code":"G0278","GRN Date":"2026-05-12","Item SkuCode":"MWBWSKP.00614.B0_N","Item Type Name":"BB 20% Urea Roll On 50ml","Vendor Name":"PONTIKA AEROTECH LIMITED","Vendor Batch Number":"BUR26005","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0279","GRN Date":"2026-05-12","Item SkuCode":"MWBWSKP.00614.B0_N","Item Type Name":"BB 20% Urea Roll On 50ml","Vendor Name":"PONTIKA AEROTECH LIMITED","Vendor Batch Number":"BUR26005","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0287","GRN Date":"2026-05-12","Item SkuCode":"MWBWSKP.00626.B0_N","Item Type Name":"BB 1% Salicylic Acid Bodywash 100ml","Vendor Name":"BIO HERBAL REMEDIES PVT LTD","Vendor Batch Number":"BBBW-437","Expiry Date":"2029-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":1095,"Standard Shelf Life (days)":1094,"Deviation (days)":1,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0075","GRN Date":"2026-05-11","Item SkuCode":"MWLJNTP.00507.B0_N","Item Type Name":"LJ NutriMix 2+ Chocolate 1kg","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLMMRN985","Expiry Date":"2027-04-28","Manufacturing":"2026-04-29","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"LJ Beyond NCR"},{"GRN Code":"G0027","GRN Date":"2026-05-12","Item SkuCode":"MWLJNTP.00507.B0_N","Item Type Name":"LJ NutriMix 2+ Chocolate 1kg","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLMMRN985","Expiry Date":"2027-04-28","Manufacturing":"2026-04-29","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"LJ Beyond LUC"},{"GRN Code":"G0340","GRN Date":"2026-05-13","Item SkuCode":"MWLJNTP.00507.B0_N","Item Type Name":"LJ NutriMix 2+ Chocolate 1kg","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLMMRN985","Expiry Date":"2027-04-28","Manufacturing":"2026-04-29","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"LJ EMIZA BLR"},{"GRN Code":"G0293","GRN Date":"2026-05-14","Item SkuCode":"MWLJNTP.00507.B0_N","Item Type Name":"LJ NutriMix 2+ Chocolate 1kg","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLNNRN985","Expiry Date":"2027-04-28","Manufacturing":"2026-04-29","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"LJ Ahmedabad"},{"GRN Code":"G0353","GRN Date":"2026-05-15","Item SkuCode":"MWLJNTP.00507.B0_N","Item Type Name":"LJ NutriMix 2+ Chocolate 1kg","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLMMRN985","Expiry Date":"2027-04-28","Manufacturing":"2026-04-29","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"LJ Kolkata"},{"GRN Code":"G0313","GRN Date":"2026-05-15","Item SkuCode":"MWBWSKP.00650.B0_N","Item Type Name":"BB 10% Magnesium Lotion 200ml","Vendor Name":"BILI LIFE SCIENCE LLP","Vendor Batch Number":"1EB26","Expiry Date":"2028-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0314","GRN Date":"2026-05-15","Item SkuCode":"MWBWSKP.00650.B0_N","Item Type Name":"BB 10% Magnesium Lotion 200ml","Vendor Name":"BILI LIFE SCIENCE LLP","Vendor Batch Number":"1EB26","Expiry Date":"2028-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0288b","GRN Date":"2026-05-13","Item SkuCode":"MWLJNTP.00536.B0_N","Item Type Name":"LJ Millet Choco Crunch 250g","Vendor Name":"Functional & Innovative Foods","Vendor Batch Number":"FMCC0405","Expiry Date":"2027-02-03","Manufacturing":"2026-05-04","Actual Shelf Life (days)":275,"Standard Shelf Life (days)":270,"Deviation (days)":5,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0064","GRN Date":"2026-05-11","Item SkuCode":"MWBWUSAPRP.00022.B0_N","Item Type Name":"BW USA Shilajit Gummies 120s","Vendor Name":"ADVAMA PRIVATE LIMITED","Vendor Batch Number":"BSH1216158","Expiry Date":"2027-10-31","Manufacturing":"2026-05-01","Actual Shelf Life (days)":548,"Standard Shelf Life (days)":540,"Deviation (days)":8,"Status":"Matching","Facility":"Aramex"},{"GRN Code":"G0066","GRN Date":"2026-05-12","Item SkuCode":"MWBWUSAPRP.00022.B0_N","Item Type Name":"BW USA Shilajit Gummies 120s","Vendor Name":"ADVAMA PRIVATE LIMITED","Vendor Batch Number":"BSH1216158","Expiry Date":"2027-10-31","Manufacturing":"2026-05-01","Actual Shelf Life (days)":548,"Standard Shelf Life (days)":540,"Deviation (days)":8,"Status":"Matching","Facility":"Aramex"},{"GRN Code":"G8251","GRN Date":"2026-05-13","Item SkuCode":"MWLJNTP.00563.B0_N","Item Type Name":"LJ Millet Chips Cheesy Mint 40g","Vendor Name":"Functional & Innovative Foods","Vendor Batch Number":"FMCCM0405","Expiry Date":"2026-12-03","Manufacturing":"2026-05-04","Actual Shelf Life (days)":213,"Standard Shelf Life (days)":211,"Deviation (days)":2,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G0269","GRN Date":"2026-05-12","Item SkuCode":"MWBWSKP.00672.B0_N","Item Type Name":"BB Ultra Light Sunscreen SPF 50+","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6192","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0286b","GRN Date":"2026-05-12","Item SkuCode":"MWBWSKP.00672.B0_N","Item Type Name":"BB Ultra Light Sunscreen SPF 50+","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6192","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0282","GRN Date":"2026-05-12","Item SkuCode":"MWBWSKP.00681.B0_N","Item Type Name":"Be Bodywise 4% AHA BHA Underarm Roll-On Aqua","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6166","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0302","GRN Date":"2026-05-15","Item SkuCode":"MWBWSKP.00681.B0_N","Item Type Name":"Be Bodywise 4% AHA BHA Underarm Roll-On Aqua","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6208","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G8238","GRN Date":"2026-05-11","Item SkuCode":"MWBWSKP.00684.B0_N","Item Type Name":"Be Bodywise 6% AHA BHA Underarm Roll On Flora","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6211","Expiry Date":"2028-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8258","GRN Date":"2026-05-14","Item SkuCode":"MWBWSKP.00684.B0_N","Item Type Name":"Be Bodywise 6% AHA BHA Underarm Roll On Flora","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6210","Expiry Date":"2028-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8259","GRN Date":"2026-05-14","Item SkuCode":"MWBWSKP.00684.B0_N","Item Type Name":"Be Bodywise 6% AHA BHA Underarm Roll On Flora","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6211","Expiry Date":"2028-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8273","GRN Date":"2026-05-15","Item SkuCode":"MWBWSKP.00697.B0_N","Item Type Name":"BB 12% AHA Body Scrub 300gm","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6197","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8242","GRN Date":"2026-05-12","Item SkuCode":"MWBWSKP.00703.B0_N","Item Type Name":"BB 5% AHA BHA Exfoliating Body Wash","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6198","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8243","GRN Date":"2026-05-12","Item SkuCode":"MWBWSKP.00703.B0_N","Item Type Name":"BB 5% AHA BHA Exfoliating Body Wash","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6199","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8244","GRN Date":"2026-05-12","Item SkuCode":"MWBWSKP.00703.B0_N","Item Type Name":"BB 5% AHA BHA Exfoliating Body Wash","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6200","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G0297","GRN Date":"2026-05-14","Item SkuCode":"MWBWSKP.00703.B0_N","Item Type Name":"BB 5% AHA BHA Exfoliating Body Wash","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6203","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0298","GRN Date":"2026-05-14","Item SkuCode":"MWBWSKP.00703.B0_N","Item Type Name":"BB 5% AHA BHA Exfoliating Body Wash","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6205","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0290","GRN Date":"2026-05-13","Item SkuCode":"MWLJNTP.00698.B0_N","Item Type Name":"LJ NutriMix Lite 7+ 350gm Chocolate Jar","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLNMLC017","Expiry Date":"2027-05-05","Manufacturing":"2026-05-06","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G8256","GRN Date":"2026-05-13","Item SkuCode":"MWLJNTP.000748.B0_N","Item Type Name":"LJ Tomato Sauce Plastic Bottle 600gm","Vendor Name":"LUCRATIVE IMPEX PVT LTD","Vendor Batch Number":"260507/TS","Expiry Date":"2027-02-06","Manufacturing":"2026-05-07","Actual Shelf Life (days)":275,"Standard Shelf Life (days)":270,"Deviation (days)":5,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G0296","GRN Date":"2026-05-14","Item SkuCode":"MWBWBCP.00167.B0_N","Item Type Name":"BB 5% AHA BHA Exfoliating Body Wash 700ml","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6234","Expiry Date":"2028-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0300","GRN Date":"2026-05-15","Item SkuCode":"MWBWBCP.00167.B0_N","Item Type Name":"BB 5% AHA BHA Exfoliating Body Wash 700ml","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6234","Expiry Date":"2028-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0009","GRN Date":"2026-05-11","Item SkuCode":"MWMMNTP.00207.AAAA.B0_N","Item Type Name":"MM Creatine Mixed Fruit Flavored 125gm","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLMMCMX018","Expiry Date":"2027-05-01","Manufacturing":"2026-05-02","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":365,"Deviation (days)":-1,"Status":"Matching","Facility":"MM Beyond NCR"},{"GRN Code":"G0161","GRN Date":"2026-05-13","Item SkuCode":"MWMMNTP.00207.AAAA.B0_N","Item Type Name":"MM Creatine Mixed Fruit Flavored 125gm","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLMMCMX018","Expiry Date":"2027-05-01","Manufacturing":"2026-05-02","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":365,"Deviation (days)":-1,"Status":"Matching","Facility":"MM EMIZA BLR"},{"GRN Code":"G0001","GRN Date":"2026-05-14","Item SkuCode":"MWMMNTP.00207.AAAA.B0_N","Item Type Name":"MM Creatine Mixed Fruit Flavored 125gm","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLMMCMX018","Expiry Date":"2027-05-01","Manufacturing":"2026-05-02","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":365,"Deviation (days)":-1,"Status":"Matching","Facility":"MM Beyond LUC"},{"GRN Code":"G0357","GRN Date":"2026-05-13","Item SkuCode":"OWNAPP.0007","Item Type Name":"Nutritional Information in Braille","Vendor Name":"SIDDHIVINAYAK ARTS","Vendor Batch Number":"0","Expiry Date":"2031-03-31","Manufacturing":"2026-05-01","Actual Shelf Life (days)":1795,"Standard Shelf Life (days)":1800,"Deviation (days)":-5,"Status":"Matching","Facility":"OWN"},{"GRN Code":"G8254","GRN Date":"2026-05-13","Item SkuCode":"MWLJNTP.000801.B0_N","Item Type Name":"LJ Magnesium Gummies 30s","Vendor Name":"ADVAMA PRIVATE LIMITED","Vendor Batch Number":"LJM0996132","Expiry Date":"2027-09-30","Manufacturing":"2026-04-01","Actual Shelf Life (days)":547,"Standard Shelf Life (days)":540,"Deviation (days)":7,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G0356","GRN Date":"2026-05-12","Item SkuCode":"OWNAPP.0009","Item Type Name":"OWN Sugar Board","Vendor Name":"FOX PRINT","Vendor Batch Number":"Sugar board","Expiry Date":"2031-04-05","Manufacturing":"2026-05-01","Actual Shelf Life (days)":1800,"Standard Shelf Life (days)":1800,"Deviation (days)":0,"Status":"Matching","Facility":"OWN"},{"GRN Code":"G0324","GRN Date":"2026-05-16","Item SkuCode":"MWBWSKP.00777.B0_N","Item Type Name":"BB 30% Urea Foot Roll On","Vendor Name":"PONTIKA AEROTECH LIMITED","Vendor Batch Number":"BUF26003","Expiry Date":"2028-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0265","GRN Date":"2026-05-11","Item SkuCode":"MWBWSKP.00788.B0_N","Item Type Name":"BB 6% AHA BHA Underarm Roll On 50ml Aqua","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6212","Expiry Date":"2028-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0295","GRN Date":"2026-05-14","Item SkuCode":"MWLJNTP.000813.B0_N","Item Type Name":"LJ Mixed Nuts Spread 300g","Vendor Name":"KREATA FOOD SPECIALITIES PVT LTD","Vendor Batch Number":"KS020526A73","Expiry Date":"2027-02-01","Manufacturing":"2026-05-02","Actual Shelf Life (days)":275,"Standard Shelf Life (days)":273,"Deviation (days)":2,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0291","GRN Date":"2026-05-13","Item SkuCode":"MWLJNTP.000820.B0_N","Item Type Name":"LJ Millet Choco Crunch Star Moon 250g","Vendor Name":"Functional & Innovative Foods","Vendor Batch Number":"FCSM0705","Expiry Date":"2026-11-06","Manufacturing":"2026-05-07","Actual Shelf Life (days)":183,"Standard Shelf Life (days)":180,"Deviation (days)":3,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G8255","GRN Date":"2026-05-13","Item SkuCode":"MWBWBCP.00168.B0_N","Item Type Name":"BB 1% Salicylic Ceramide Body Wash","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6193","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8257","GRN Date":"2026-05-13","Item SkuCode":"MWBWBCP.00168.B0_N","Item Type Name":"BB 1% Salicylic Ceramide Body Wash","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6194","Expiry Date":"2028-03-31","Manufacturing":"2026-04-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G8261","GRN Date":"2026-05-14","Item SkuCode":"MWBWHFP.00711.B0_N","Item Type Name":"BB Postpartum Biotin Gummies 30s","Vendor Name":"ADVAMA PRIVATE LIMITED","Vendor Batch Number":"BPB1196155","Expiry Date":"2027-09-30","Manufacturing":"2026-04-01","Actual Shelf Life (days)":547,"Standard Shelf Life (days)":540,"Deviation (days)":7,"Status":"Matching","Facility":"SL Ambient"},{"GRN Code":"G0275","GRN Date":"2026-05-12","Item SkuCode":"MWLJNTP.00553.BO_N","Item Type Name":"LJ Proteinmix 250gm","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLLJPM007","Expiry Date":"2027-04-29","Manufacturing":"2026-04-30","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0276","GRN Date":"2026-05-12","Item SkuCode":"MWLJNTP.00553.BO_N","Item Type Name":"LJ Proteinmix 250gm","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLLJPM006","Expiry Date":"2027-04-29","Manufacturing":"2026-04-30","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0067","GRN Date":"2026-05-13","Item SkuCode":"MWRLUSAPRP.00021.B0_N","Item Type Name":"RL USA Ashwamag Gummy 60s","Vendor Name":"ADVAMA PRIVATE LIMITED","Vendor Batch Number":"RMA1246161","Expiry Date":"2027-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":540,"Deviation (days)":-176,"Status":"Deviation","Facility":"Aramex"},{"GRN Code":"G0068","GRN Date":"2026-05-13","Item SkuCode":"MWRLUSAPRP.00021.B0_N","Item Type Name":"RL USA Ashwamag Gummy 60s","Vendor Name":"ADVAMA PRIVATE LIMITED","Vendor Batch Number":"RMA1246162","Expiry Date":"2027-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":540,"Deviation (days)":-176,"Status":"Deviation","Facility":"Aramex"},{"GRN Code":"G0069","GRN Date":"2026-05-13","Item SkuCode":"MWRLUSAPRP.00021.B0_N","Item Type Name":"RL USA Ashwamag Gummy 60s","Vendor Name":"ADVAMA PRIVATE LIMITED","Vendor Batch Number":"RMA1226160","Expiry Date":"2027-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":540,"Deviation (days)":-176,"Status":"Deviation","Facility":"Aramex"},{"GRN Code":"G0277","GRN Date":"2026-05-12","Item SkuCode":"MWLJNTP.00615.BO_N","Item Type Name":"LJ Nutrimix 2+ 200gm Chocolate","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLMMRN986","Expiry Date":"2027-04-27","Manufacturing":"2026-05-02","Actual Shelf Life (days)":360,"Standard Shelf Life (days)":360,"Deviation (days)":0,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0293b","GRN Date":"2026-05-13","Item SkuCode":"MWLJNTP.00615.BO_N","Item Type Name":"LJ Nutrimix 2+ 200gm Chocolate","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLMMRN986","Expiry Date":"2027-05-01","Manufacturing":"2026-05-02","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":360,"Deviation (days)":4,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0289","GRN Date":"2026-05-13","Item SkuCode":"MWBWSKK.00801.B0_N","Item Type Name":"De-Tan SPF 50+ Body Sunscreen Lotion 175g","Vendor Name":"N. G. ELECTRO PRODUCTS PVT LTD","Vendor Batch Number":"NJ6227","Expiry Date":"2028-04-30","Manufacturing":"2026-05-01","Actual Shelf Life (days)":730,"Standard Shelf Life (days)":720,"Deviation (days)":10,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0286","GRN Date":"2026-05-11","Item SkuCode":"MWMMHRK.6357.AAAABO_N","Item Type Name":"Man Matters Minoxifin Advance 75ml","Vendor Name":"PONTIKA AEROTECH LIMITED","Vendor Batch Number":"MNA26003","Expiry Date":"2028-04-29","Manufacturing":"2026-05-01","Actual Shelf Life (days)":729,"Standard Shelf Life (days)":729,"Deviation (days)":0,"Status":"Matching","Facility":"SL RX"},{"GRN Code":"G0287b","GRN Date":"2026-05-14","Item SkuCode":"MWMMHRK.6357.AAAABO_N","Item Type Name":"Man Matters Minoxifin Advance 75ml","Vendor Name":"PONTIKA AEROTECH LIMITED","Vendor Batch Number":"MNA26003","Expiry Date":"2028-04-29","Manufacturing":"2026-05-01","Actual Shelf Life (days)":729,"Standard Shelf Life (days)":729,"Deviation (days)":0,"Status":"Matching","Facility":"SL RX"},{"GRN Code":"G0331","GRN Date":"2026-05-17","Item SkuCode":"MWMMNTP.6369.AAAABO_N","Item Type Name":"MM Creatine + Electrolyte Orange","Vendor Name":"Sapiens Labs","Vendor Batch Number":"SLMMCEO003","Expiry Date":"2027-04-29","Manufacturing":"2026-04-30","Actual Shelf Life (days)":364,"Standard Shelf Life (days)":364,"Deviation (days)":0,"Status":"Matching","Facility":"SL Mother Hub"},{"GRN Code":"G0063","GRN Date":"2026-05-11","Item SkuCode":"MWBWUAENTP.0005B0_N","Item Type Name":"BW Glutathione Gummies 30s UAE","Vendor Name":"ADVAMA PRIVATE LIMITED","Vendor Batch Number":"BGT1206156","Expiry Date":"2027-09-30","Manufacturing":"2026-04-01","Actual Shelf Life (days)":547,"Standard Shelf Life (days)":540,"Deviation (days)":7,"Status":"Matching","Facility":"Aramex"}];
+
+const COLS=[
+  {k:'GRN Code',l:'GRN',cls:'td-grn'},
+  {k:'GRN Date',l:'Date'},
+  {k:'Item SkuCode',l:'SKU Code',cls:'td-sku'},
+  {k:'Item Type Name',l:'Item Name',cls:'td-name'},
+  {k:'Vendor Name',l:'Vendor'},
+  {k:'Vendor Batch Number',l:'Batch',cls:'td-mono'},
+  {k:'Manufacturing',l:'Mfg Date',cls:'td-mono'},
+  {k:'Expiry Date',l:'Expiry',cls:'td-mono'},
+  {k:'Actual Shelf Life (days)',l:'Actual SL',cls:'td-r'},
+  {k:'Standard Shelf Life (days)',l:'Std SL',cls:'td-r'},
+  {k:'Deviation (days)',l:'Deviation',cls:'td-r'},
+  {k:'Status',l:'Status'},
+  {k:'Facility',l:'Facility'},
+];
+
+let filt=[...DATA],stF='',srtC='GRN Date',srtA=false,pg=1;
+const PP=20;
+
+window.addEventListener('DOMContentLoaded',()=>{
+  buildDrops();buildHead();applyF();renderS1();
+  // Auto-fetch live data from Google Sheet on page open
+  if(LIVE_SHEET_ID&&LIVE_SHEET_ID!=='YOUR_GOOGLE_SHEET_ID') loadLiveData();
+});
+
+function goTab(t){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+  document.querySelectorAll('.nav-tab').forEach(b=>b.classList.remove('active'));
+  document.getElementById('screen-'+t).classList.add('active');
+  document.getElementById('tab-'+t).classList.add('active');
 }
 
-// ── MANUAL RECOVERY — searches entire day, always sends email ────────
-function runManualRecovery() {
-  Logger.log('── MANUAL RECOVERY MODE — full day search ──');
+// ── SUMMARY ──────────────────────────────────────────────────
+function renderS1(){
+  const tot=DATA.length,
+        m=DATA.filter(r=>r.Status==='Matching').length,
+        d=DATA.filter(r=>r.Status==='Deviation').length,
+        mfg=DATA.filter(r=>r.Status==='Mfg Date Not Found').length,
+        skus=new Set(DATA.map(r=>r['Item SkuCode'])).size;
 
-  const _start = CONFIG.emailWindowStart;
-  const _end   = CONFIG.emailWindowEnd;
-  CONFIG.emailWindowStart = 0;
-  CONFIG.emailWindowEnd   = 24;
+  cnt('kv0',tot,800);cnt('kv1',m,900);cnt('kv2',d,1000);cnt('kv3',mfg,1100);
+  qs('kb1').textContent=pct(m,tot)+' match rate';
+  qs('kb2').textContent=pct(d,tot)+' of total';
+  qs('kb3').textContent=mfg+' vendor batches';
 
-  try {
-    const results = processData_(true);
-    if (!results) throw new Error('No data processed — check Gmail for today\'s exports');
+  const devRows=DATA.filter(r=>r.Status==='Deviation'&&r['Deviation (days)']!=='');
 
-    const { data, stats, weekRange } = results;
+  const vC={};devRows.forEach(r=>{vC[r['Vendor Name']]=(vC[r['Vendor Name']]||0)+1});
 
-    writeToSheet_(data, stats, weekRange);
-    sendEmail_(stats, weekRange, true);
+  drawDonut(m,d,mfg,tot);
 
-  } catch (err) {
-    Logger.log('RECOVERY ERROR: ' + err.message);
-    MailApp.sendEmail({
-      to      : 'vipul@mosaicwellness.in',
-      subject : `⚠️ GRN Recovery Failed — ${new Date().toDateString()}`,
-      body    : `Manual recovery failed.\n\nError: ${err.message}\n\nCheck Apps Script logs.`,
-    });
-  } finally {
-    CONFIG.emailWindowStart = _start;
-    CONFIG.emailWindowEnd   = _end;
-    Logger.log('Time window restored to 8–10 AM');
-  }
-}
+  const cats=[['Matching',m,'#047857'],['Deviation',d,'#b91c1c'],['Mfg Missing',mfg,'#d97706']];
+  qs('legend').innerHTML=cats.map(([n,v,c])=>`<div class="dl-row"><div class="dl-l"><div class="dl-swatch" style="background:${c}"></div><div class="dl-name">${n}</div></div><div class="dl-r"><div class="dl-n">${v}</div><div class="dl-p">${pct(v,tot)}</div></div></div>`).join('');
+  qs('gpct').textContent=pct(m,tot);
+  qs('compNote').textContent='Target match rate ≥ 95% · '+new Set(DATA.map(r=>r.Facility)).size+' facilities reviewed';
 
-// ── CORE PROCESSING ───────────────────────────────────────────────────
-function processData_(isRecovery) {
-  const { weekStart, weekEnd, weekRange } = getLastWeekRange();
-  Logger.log(`Processing week: ${weekRange}`);
 
-  // Fetch all 4 CSVs
-  const grnCsv          = fetchCsvFromGmail(CONFIG.subjects.grn,          'grn');
-  const shelfCsv        = fetchCsvFromGmail(CONFIG.subjects.shelfwise,     'shelfwise');
-  const itemMasterCsv   = fetchCsvFromGmail(CONFIG.subjects.itemMaster,    'itemMaster');
-  const batchDetailsCsv = fetchCsvFromGmail(CONFIG.subjects.batchDetails,  'batchDetails');
 
-  if (!grnCsv)        throw new Error('GRN CSV not found in Gmail');
-  if (!shelfCsv)      throw new Error('Shelfwise CSV not found in Gmail');
-  if (!itemMasterCsv) throw new Error('Item Master CSV not found');
-  if (!batchDetailsCsv) Logger.log('⚠️ Batch Details not found — falling back to Shelfwise for mfg dates');
+  const vTop=Object.entries(vC).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const maxV=vTop[0]?vTop[0][1]:1;
+  qs('vBadge').textContent=Object.keys(vC).length+' vendors';
+  qs('vBars').innerHTML=vTop.map(([n,c],i)=>`<div class="bar-row"><div class="bar-lbl" title="${n}">${n.length>22?n.slice(0,22)+'…':n}</div><div class="bar-track"><div class="bar-fill" style="transition-delay:${i*.07}s;background:linear-gradient(90deg,#fca5a5,#b91c1c)" data-w="${(c/maxV*100).toFixed(1)}"></div></div><div class="bar-n">${c}</div></div>`).join('');
 
-  // Parse
-  const grnRows     = parseCsv(grnCsv);
-  const shelfRows   = parseCsv(shelfCsv);
-  const imRows      = parseCsv(itemMasterCsv);
-  const batchRows   = batchDetailsCsv ? parseCsv(batchDetailsCsv) : [];
-
-  Logger.log(`GRN:${grnRows.length} | Shelfwise:${shelfRows.length} | IM:${imRows.length} | Batch:${batchRows.length}`);
-
-  // Build lookup maps
-  // Mfg date priority: Batch Details first → Shelfwise fallback
-  const mfgFromBatch = buildMfgMap(batchRows,  'Vendor Batch Code',  'Manufacturing date');
-  const mfgFromShelf = buildMfgMap(shelfRows,  'Vendor batch code',  'Manufacturing');
-  const mfgMap       = { ...mfgFromShelf, ...mfgFromBatch }; // batch overrides shelf
-
-  const slMap    = buildStandardSlMap(imRows);
-  const liveSKUs = buildLiveSkuSet(shelfRows);
-
-  Logger.log(`Mfg map: Batch=${Object.keys(mfgFromBatch).length} | Shelf=${Object.keys(mfgFromShelf).length} | Combined=${Object.keys(mfgMap).length}`);
-
-  // Filter GRN
-  const freshRows = grnRows.filter(r => {
-    const vendor  = (r['Vendor Name'] || '').toUpperCase();
-    const grnDate = parseDate(r['GRN Date']);
-    if (!grnDate) return false;
-    if (vendor.includes(CONFIG.rtvKeyword))              return false;
-    if (grnDate < weekStart || grnDate > weekEnd)        return false;
-    if (!liveSKUs.has((r['Item SkuCode'] || '').trim())) return false;
-    return true;
+  // Build SKU map with both name and code
+  const sC={},sCode={};
+  devRows.forEach(r=>{
+    const k=r['Item Type Name'];
+    sC[k]=(sC[k]||0)+1;
+    if(!sCode[k])sCode[k]=r['Item SkuCode'];
   });
-
-  Logger.log(`Fresh inward rows: ${freshRows.length}`);
-
-  // Calculate shelf life
-  const data = freshRows.map(r => {
-    const sku     = (r['Item SkuCode']        || '').trim();
-    const vbn     = (r['Vendor Batch Number'] || '').trim();
-    const expDate = parseDate(r['Expiry Date']);
-    const mfgDate = parseDate(mfgMap[vbn] || '');
-    const stdSL   = slMap[sku];
-
-    let actualSL = '', deviation = '', status = 'Mfg Date Not Found';
-
-    if (mfgDate && expDate && stdSL !== undefined) {
-      actualSL  = daysBetween(mfgDate, expDate);
-      deviation = actualSL - stdSL;
-      status    = Math.abs(deviation) <= CONFIG.tolerance ? 'Matching' : 'Deviation';
-    }
-
-    return {
-      grnCode  : r['GRN Code']       || '',
-      grnDate  : r['GRN Date']       || '',
-      sku,
-      itemName : r['Item Type Name'] || '',
-      vendor   : r['Vendor Name']    || '',
-      batch    : vbn,
-      mfgDate  : mfgDate ? formatDate(mfgDate) : '',
-      expiry   : r['Expiry Date']    || '',
-      actualSL,
-      stdSL    : stdSL !== undefined ? stdSL : '',
-      deviation,
-      status,
-      facility : r['Facility']       || '',
-    };
-  });
-
-  const total    = data.length;
-  const matching = data.filter(r => r.status === 'Matching').length;
-  const dev      = data.filter(r => r.status === 'Deviation').length;
-  const missing  = data.filter(r => r.status === 'Mfg Date Not Found').length;
-
-  Logger.log(`Stats — Total:${total} | Matching:${matching} | Deviation:${dev} | Missing:${missing}`);
-
-  return {
-    data,
-    weekRange,
-    stats: {
-      total, matching, dev, missing,
-      matchPct : total ? ((matching / total) * 100).toFixed(1) : '0.0',
-      devPct   : total ? ((dev     / total) * 100).toFixed(1) : '0.0',
-      topDeviations: data
-        .filter(r => r.status === 'Deviation')
-        .sort((a, b) => Math.abs(b.deviation) - Math.abs(a.deviation))
-        .slice(0, 5),
-    },
-  };
-}
-
-// ── WRITE TO GOOGLE SHEET ─────────────────────────────────────────────
-function writeToSheet_(data, stats, weekRange) {
-  if (!CONFIG.resultsSheetId || CONFIG.resultsSheetId === 'YOUR_GOOGLE_SHEET_ID') {
-    Logger.log('⚠️ resultsSheetId not configured — skipping sheet write');
-    return;
-  }
-
-  try {
-    const ss = SpreadsheetApp.openById(CONFIG.resultsSheetId);
-
-    // ── DATA sheet ──────────────────────────────────────────────────
-    let dataSheet = ss.getSheetByName('Data');
-    if (!dataSheet) dataSheet = ss.insertSheet('Data');
-    dataSheet.clearContents();
-
-    const headers = [
-      'GRN Code','GRN Date','Item SkuCode','Item Type Name',
-      'Vendor Name','Vendor Batch Number','Manufacturing',
-      'Expiry Date','Actual Shelf Life (days)','Standard Shelf Life (days)',
-      'Deviation (days)','Status','Facility'
-    ];
-    const rows = [headers, ...data.map(r => [
-      r.grnCode, r.grnDate, r.sku, r.itemName, r.vendor, r.batch,
-      r.mfgDate, r.expiry, r.actualSL, r.stdSL, r.deviation, r.status, r.facility
-    ])];
-    dataSheet.getRange(1, 1, rows.length, headers.length).setValues(rows);
-
-    // Bold header row
-    dataSheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
-
-    // ── META sheet ──────────────────────────────────────────────────
-    let metaSheet = ss.getSheetByName('Meta');
-    if (!metaSheet) metaSheet = ss.insertSheet('Meta');
-    metaSheet.clearContents();
-
-    metaSheet.getRange('A1:B7').setValues([
-      ['Key',          'Value'],
-      ['weekRange',    weekRange],
-      ['total',        stats.total],
-      ['matching',     stats.matching],
-      ['deviation',    stats.dev],
-      ['missing',      stats.missing],
-      ['lastUpdated',  new Date().toISOString()],
-    ]);
-
-    Logger.log(`✓ Sheet updated — ${data.length} rows written`);
-
-  } catch (e) {
-    Logger.log(`Sheet write error: ${e.message}`);
-  }
-}
-
-// ── SEND EMAIL ────────────────────────────────────────────────────────
-function sendEmail_(stats, weekRange, isRecovery) {
-  const subject = `📊 GRN Shelf Life Compliance — ${weekRange}${isRecovery ? ' [Manual Recovery]' : ''}`;
-  const htmlBody = buildEmailHtml({ weekRange, ...stats });
-
-  MailApp.sendEmail({
-    to      : CONFIG.recipients.join(','),
-    subject,
-    htmlBody,
-    name    : 'GRN Dashboard · Mosaic Wellness',
-  });
-
-  Logger.log(`✓ Email sent to ${CONFIG.recipients.length} recipients`);
-}
-
-// ── DATE HELPERS ──────────────────────────────────────────────────────
-function getLastWeekRange() {
-  const nowIST   = new Date(Date.now() + IST_OFFSET_MS);
-  const today    = new Date(Date.UTC(nowIST.getUTCFullYear(), nowIST.getUTCMonth(), nowIST.getUTCDate()));
-  const dayOfWk  = today.getUTCDay();
-  const daysToLastMon = dayOfWk === 0 ? 6 : dayOfWk - 1;
-
-  const weekStart = new Date(today);
-  weekStart.setUTCDate(today.getUTCDate() - daysToLastMon - 7);
-
-  const weekEnd = new Date(weekStart);
-  weekEnd.setUTCDate(weekStart.getUTCDate() + 6);
-
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const fmt = d => `${d.getUTCDate()} ${months[d.getUTCMonth()]}`;
-  return {
-    weekStart, weekEnd,
-    weekRange: `${fmt(weekStart)} – ${fmt(weekEnd)}, ${weekEnd.getUTCFullYear()}`,
-  };
-}
-
-function parseDate(str) {
-  if (!str) return null;
-  const s = str.trim();
-  let m;
-  if ((m = s.match(/^(\d{4})-(\d{2})-(\d{2})/))) return new Date(Date.UTC(+m[1],+m[2]-1,+m[3]));
-  if ((m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/))) return new Date(Date.UTC(+m[3],+m[2]-1,+m[1]));
-  if ((m = s.match(/^(\d{2})-(\d{2})-(\d{4})/)))  return new Date(Date.UTC(+m[3],+m[2]-1,+m[1]));
-  return null;
-}
-
-function daysBetween(d1, d2) { return Math.round((d2 - d1) / 86400000); }
-function formatDate(d)       { return d.toISOString().slice(0, 10); }
-
-// ── GMAIL FETCH ───────────────────────────────────────────────────────
-function fetchCsvFromGmail(subject, type) {
-  const props    = PropertiesService.getScriptProperties();
-  const nowIST   = new Date(Date.now() + IST_OFFSET_MS);
-  const todayStr = Utilities.formatDate(nowIST, 'UTC', 'yyyy/MM/dd');
-
-  const query   = `from:${CONFIG.sender} subject:"${subject}" after:${todayStr}`;
-  Logger.log(`Searching: ${query}`);
-
-  const threads = GmailApp.search(query, 0, 10);
-  Logger.log(`Threads found for "${subject}": ${threads.length}`);
-
-  let csvUrl = null;
-
-  for (const thread of threads) {
-    for (const msg of thread.getMessages()) {
-      const msgTimeIST = new Date(msg.getDate().getTime() + IST_OFFSET_MS);
-      const msgHour    = msgTimeIST.getUTCHours();
-
-      if (msgHour >= CONFIG.emailWindowStart && msgHour < CONFIG.emailWindowEnd) {
-        const body  = msg.getPlainBody() + msg.getBody();
-        const match = body.match(/https:\/\/dawxwb4zstkgp\.cloudfront\.net\/[^\s"<>\n\r]+\.csv/i);
-        if (match) {
-          csvUrl = match[0].replace(/&amp;/g, '&').trim();
-          Logger.log(`Found URL for ${type}: ${csvUrl}`);
-          break;
-        }
-      }
-    }
-    if (csvUrl) break;
-  }
-
-  // Cache Item Master — reuse if no new email today
-  if (!csvUrl && type === 'itemMaster') {
-    csvUrl = props.getProperty('LAST_ITEM_MASTER_URL');
-    if (csvUrl) Logger.log(`Using cached Item Master URL`);
-  }
-  // Cache Batch Details — reuse if no new email today
-  if (!csvUrl && type === 'batchDetails') {
-    csvUrl = props.getProperty('LAST_BATCH_URL');
-    if (csvUrl) Logger.log(`Using cached Batch Details URL`);
-  }
-
-  if (!csvUrl) return null;
-
-  if (type === 'itemMaster')   props.setProperty('LAST_ITEM_MASTER_URL', csvUrl);
-  if (type === 'batchDetails') props.setProperty('LAST_BATCH_URL', csvUrl);
-
-  try {
-    const res = UrlFetchApp.fetch(csvUrl, { muteHttpExceptions: true });
-    if (res.getResponseCode() !== 200) {
-      Logger.log(`HTTP ${res.getResponseCode()} for ${type}`);
-      return null;
-    }
-    return res.getContentText();
-  } catch (e) {
-    Logger.log(`Fetch error for ${type}: ${e.message}`);
-    return null;
-  }
-}
-
-// ── CSV PARSER ────────────────────────────────────────────────────────
-function parseCsv(csvText) {
-  const lines = csvText.split(/\r?\n/).filter(l => l.trim());
-  if (lines.length < 2) return [];
-  const headers = parseCsvLine(lines[0]);
-  return lines.slice(1).map(l => {
-    const vals = parseCsvLine(l);
-    const row  = {};
-    headers.forEach((h, i) => { row[h.trim()] = (vals[i] || '').trim(); });
-    return row;
-  }).filter(r => Object.values(r).some(v => v));
-}
-
-function parseCsvLine(line) {
-  const result = []; let cur = '', inQ = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') { if (inQ && line[i+1]==='"'){cur+='"';i++;}else inQ=!inQ; }
-    else if (ch === ',' && !inQ) { result.push(cur); cur = ''; }
-    else cur += ch;
-  }
-  result.push(cur);
-  return result;
-}
-
-// ── LOOKUP BUILDERS ───────────────────────────────────────────────────
-
-// Generic mfg map builder — pass column name overrides
-function buildMfgMap(rows, batchCol, mfgCol) {
-  const map = {};
-  rows.forEach(r => {
-    const vbc = (r[batchCol] || '').trim();
-    const mfg = (r[mfgCol]   || '').trim();
-    if (vbc && mfg && !map[vbc]) map[vbc] = mfg;
-  });
-  return map;
-}
-
-function buildStandardSlMap(imRows) {
-  const map = {};
-  imRows.forEach(r => {
-    const sku = (r['Product Code']||r['SKU Code']||r['Item SkuCode']||r['Sku Code']||r['SKU']||'').trim();
-    const sl  = (r['Shelf Life']  ||r['shelf_life']||r['ShelfLife'] ||r['Shelf life']||'').trim();
-    if (sku && sl && !isNaN(+sl)) map[sku] = +sl;
-  });
-  Logger.log(`Standard SL map: ${Object.keys(map).length} entries`);
-  return map;
-}
-
-function buildLiveSkuSet(shelfRows) {
-  const set = new Set();
-  shelfRows.forEach(r => {
-    const sku = (r['Item Type SKU Code']||r['Item SkuCode']||r['SKU Code']||'').trim();
-    if (sku) set.add(sku);
-  });
-  Logger.log(`Live SKUs: ${set.size}`);
-  return set;
-}
-
-// ── EMAIL HTML ────────────────────────────────────────────────────────
-function buildEmailHtml({ weekRange, total, matching, dev, missing, matchPct, devPct, topDeviations }) {
-  const devRows = (topDeviations || []).map(r => {
-    const sign  = r.deviation > 0 ? '+' : '';
-    const color = r.deviation < 0 ? '#b91c1c' : '#92400e';
-    return `<tr style="border-bottom:1px solid #e8e2d9">
-      <td style="padding:8px 12px;font-size:11px;color:#3d3a32;font-weight:500">${r.itemName}</td>
-      <td style="padding:8px 12px;font-size:10px;font-family:monospace;color:#1e40af">${r.sku}</td>
-      <td style="padding:8px 12px;font-size:11px;color:#6b6659">${r.vendor}</td>
-      <td style="padding:8px 12px;font-size:12px;font-weight:700;color:${color};text-align:right">${sign}${r.deviation}d</td>
-    </tr>`;
+  const sTop=Object.entries(sC).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const maxS=sTop[0]?sTop[0][1]:1;
+  qs('sBadge').textContent=Object.keys(sC).length+' SKUs';
+  qs('sBars').innerHTML=sTop.map(([n,c],i)=>{
+    const code=sCode[n]||'';
+    const nm=n.length>32?n.slice(0,32)+'…':n;
+    const w=(c/maxS*100).toFixed(1);
+    return`<div class="sku-row">
+      <div class="sku-meta">
+        <div class="sku-code" title="${code}">${code}</div>
+        <div class="sku-name" title="${n}">${nm}</div>
+      </div>
+      <div class="sku-right">
+        <div class="sku-count">${c}</div>
+        <div class="sku-bar-track"><div class="sku-bar-inner" data-w="${w}" style="width:0;transition:width .95s cubic-bezier(.16,1,.3,1) ${i*.12}s"></div></div>
+      </div>
+    </div>`;
   }).join('');
 
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
-<body style="margin:0;padding:32px 16px;background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
-<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
-<table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08);">
-  <tr><td style="background:#18160f;padding:28px 36px;">
-    <p style="margin:0 0 2px;font-size:10px;color:#78716c;letter-spacing:.6px;text-transform:uppercase;font-weight:600">Mosaic Wellness · Process Excellence</p>
-    <h1 style="margin:0 0 4px;font-size:22px;font-weight:700;color:#fff;letter-spacing:-.3px">GRN Shelf Life Compliance</h1>
-    <p style="margin:0;font-size:12px;color:#a8a29e">Auto-generated · Unicommerce data · Batch Details mfg dates</p>
-  </td></tr>
-  <tr><td style="padding:24px 36px 0">
-    <table cellpadding="0" cellspacing="0"><tr>
-      <td style="background:#ecfdf5;border:1px solid #6ee7b7;border-radius:20px;padding:5px 14px">
-        <span style="font-size:11px;font-weight:700;color:#047857">📅 ${weekRange}</span>
-      </td>
-      <td width="10"></td>
-      <td style="background:#fffbeb;border:1px solid #fcd34d;border-radius:20px;padding:5px 14px">
-        <span style="font-size:11px;font-weight:700;color:#92400e">⚖️ Tolerance: ±29 days</span>
-      </td>
-    </tr></table>
-  </td></tr>
-  <tr><td style="padding:20px 36px">
-    <table width="100%" cellpadding="0" cellspacing="0"><tr>
-      <td width="25%" style="padding-right:8px">
-        <table width="100%" cellpadding="0" cellspacing="0" style="background:#faf9f7;border:1px solid #e8e2d9;border-radius:10px;overflow:hidden">
-          <tr><td style="background:#18160f;height:3px"></td></tr>
-          <tr><td style="padding:14px 16px">
-            <p style="margin:0 0 5px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:#9e9888">GRN Lines</p>
-            <p style="margin:0 0 3px;font-size:28px;font-weight:700;color:#18160f;line-height:1">${total}</p>
-            <p style="margin:0;font-size:10px;color:#9e9888">Fresh inward</p>
-          </td></tr>
-        </table>
-      </td>
-      <td width="25%" style="padding-right:8px">
-        <table width="100%" cellpadding="0" cellspacing="0" style="background:#ecfdf5;border:1px solid #6ee7b7;border-radius:10px;overflow:hidden">
-          <tr><td style="background:#047857;height:3px"></td></tr>
-          <tr><td style="padding:14px 16px">
-            <p style="margin:0 0 5px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:#9e9888">Matching</p>
-            <p style="margin:0 0 3px;font-size:28px;font-weight:700;color:#047857;line-height:1">${matching}</p>
-            <p style="margin:0;font-size:10px;color:#9e9888">${matchPct}% compliant</p>
-          </td></tr>
-        </table>
-      </td>
-      <td width="25%" style="padding-right:8px">
-        <table width="100%" cellpadding="0" cellspacing="0" style="background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;overflow:hidden">
-          <tr><td style="background:#b91c1c;height:3px"></td></tr>
-          <tr><td style="padding:14px 16px">
-            <p style="margin:0 0 5px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:#9e9888">Deviations</p>
-            <p style="margin:0 0 3px;font-size:28px;font-weight:700;color:#b91c1c;line-height:1">${dev}</p>
-            <p style="margin:0;font-size:10px;color:#9e9888">${devPct}% of total</p>
-          </td></tr>
-        </table>
-      </td>
-      <td width="25%">
-        <table width="100%" cellpadding="0" cellspacing="0" style="background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;overflow:hidden">
-          <tr><td style="background:#92400e;height:3px"></td></tr>
-          <tr><td style="padding:14px 16px">
-            <p style="margin:0 0 5px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:#9e9888">Mfg Missing</p>
-            <p style="margin:0 0 3px;font-size:28px;font-weight:700;color:#92400e;line-height:1">${missing}</p>
-            <p style="margin:0;font-size:10px;color:#9e9888">needs action</p>
-          </td></tr>
-        </table>
-      </td>
-    </tr></table>
-  </td></tr>
-  ${topDeviations && topDeviations.length ? `
-  <tr><td style="padding:0 36px 24px">
-    <p style="margin:0 0 10px;font-size:12px;font-weight:700;color:#18160f">Top Deviations This Week</p>
-    <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e8e2d9;border-radius:10px;overflow:hidden">
-      <tr style="background:#faf9f7">
-        <th style="padding:8px 12px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#9e9888;text-align:left">Item</th>
-        <th style="padding:8px 12px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#9e9888;text-align:left">SKU</th>
-        <th style="padding:8px 12px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#9e9888;text-align:left">Vendor</th>
-        <th style="padding:8px 12px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#9e9888;text-align:right">Deviation</th>
-      </tr>
-      ${devRows}
-    </table>
-  </td></tr>` : ''}
-  <tr><td style="padding:0 36px 28px;text-align:center">
-    <a href="${CONFIG.dashboardUrl}" style="display:inline-block;background:#18160f;color:#fff;text-decoration:none;padding:13px 32px;border-radius:10px;font-size:13.5px;font-weight:600">
-      📊 Open Live Dashboard →
-    </a>
-    <p style="margin:10px 0 0;font-size:11px;color:#9e9888">Dashboard auto-refreshes from latest data on every load</p>
-  </td></tr>
-  <tr><td style="padding:18px 36px;background:#faf9f7;border-top:1px solid #e8e2d9">
-    <p style="margin:0;font-size:11px;color:#9e9888;text-align:center;line-height:1.7">
-      Mosaic Wellness · GRN Shelf Life Compliance · Process Excellence<br>
-      Sources: GRN + Shelfwise + Item Master + <strong>Batch Details</strong> · Tolerance: ±29 days · RTV excluded
-    </p>
-  </td></tr>
-</table>
-</td></tr></table>
-</body></html>`;
+  setTimeout(()=>document.querySelectorAll('.bar-fill[data-w],.sku-bar-inner[data-w]').forEach(el=>{el.style.width=el.dataset.w+'%'}),150);
 }
 
-// ── SETUP GUIDE ───────────────────────────────────────────────────────
-//
-//  ONE-TIME SETUP:
-//
-//  1. Create a Google Sheet:
-//     → sheets.google.com → New → name it "GRN Compliance Data"
-//     → Share → Anyone with link → Viewer
-//     → Copy the Sheet ID from the URL
-//     → Paste into CONFIG.resultsSheetId above
-//
-//  2. Paste this script at script.google.com → Save
-//
-//  3. Add trigger:
-//     → Clock icon → Add Trigger
-//     → Function: runDailyReport
-//     → Time-driven → Day timer → 9am–10am
-//     → Authorize with Gmail that receives Unicommerce emails
-//
-//  4. Paste Sheet ID into dashboard HTML (see grn_shelf_life_dashboard.html)
-//     Look for: const LIVE_SHEET_ID = 'YOUR_GOOGLE_SHEET_ID';
-//
-//  MANUAL RECOVERY:
-//  → Select runManualRecovery → Run
-//  → Searches all emails from today, always sends email
-//
-//  TEST HELPERS:
-//
-// function testFetch() {
-//   Logger.log(fetchCsvFromGmail(CONFIG.subjects.batchDetails,'batchDetails')?.slice(0,400)||'NOT FOUND');
-// }
-//
-// function testSheetWrite() {
-//   writeToSheet_([{grnCode:'TEST',grnDate:'2026-05-26',sku:'SKU001',itemName:'Test Item',
-//     vendor:'Test Vendor',batch:'B001',mfgDate:'2026-01-01',expiry:'2028-01-01',
-//     actualSL:730,stdSL:720,deviation:10,status:'Matching',facility:'SL MH'}],
-//     {total:1,matching:1,dev:0,missing:0,matchPct:'100.0',devPct:'0.0',topDeviations:[]},
-//     'May 18 – 24, 2026');
-// }
+function cnt(id,target,delay){
+  const el=qs(id);if(!el)return;
+  let st=null,dur=850;
+  setTimeout(()=>{
+    function step(ts){if(!st)st=ts;const p=Math.min((ts-st)/dur,1),e=1-Math.pow(1-p,4);el.textContent=Math.round(e*target);if(p<1)requestAnimationFrame(step);else el.textContent=target;}
+    requestAnimationFrame(step);
+  },delay);
+}
+
+function drawDonut(m,d,mfg,tot){
+  const cv=qs('gaugeC');if(!cv)return;
+  const ctx=cv.getContext('2d');
+  const W=160,cx=80,cy=80,R=68,r=48,gap=0.025;
+  ctx.clearRect(0,0,W,W);
+  if(!tot)return;
+  const slices=[{v:m,c:'#047857'},{v:d,c:'#b91c1c'},{v:mfg,c:'#d97706'}];
+  let ang=-Math.PI/2;
+  // Draw gap-separated arcs
+  slices.forEach(s=>{
+    if(!s.v)return;
+    const a=(s.v/tot)*Math.PI*2;
+    ctx.beginPath();
+    ctx.arc(cx,cy,R,ang+gap,ang+a-gap);
+    ctx.arc(cx,cy,r,ang+a-gap,ang+gap,true);
+    ctx.closePath();
+    ctx.fillStyle=s.c;
+    ctx.fill();
+    ang+=a;
+  });
+  // Inner white fill + subtle shadow
+  const grad=ctx.createRadialGradient(cx,cy,r-10,cx,cy,r);
+  grad.addColorStop(0,'rgba(0,0,0,0)');
+  grad.addColorStop(1,'rgba(0,0,0,.04)');
+  ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fillStyle='#fff';ctx.fill();
+  ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fillStyle=grad;ctx.fill();
+}
+
+function pct(v,t){return t?((v/t)*100).toFixed(1)+'%':'0%'}
+function sign(v){return v>0?'+'+v:String(v)}
+function qs(id){return document.getElementById(id)}
+
+// ── DETAILS ──────────────────────────────────────────────────
+function buildDrops(){
+  const vs=qs('vendSel'),fs=qs('facSel');
+  [...new Set(DATA.map(r=>r['Vendor Name']))].sort().forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v.length>34?v.slice(0,34)+'…':v;vs.appendChild(o)});
+  [...new Set(DATA.map(r=>r.Facility))].sort().forEach(f=>{const o=document.createElement('option');o.value=f;o.textContent=f;fs.appendChild(o)});
+}
+function buildHead(){
+  const tr=qs('thead');tr.innerHTML='';
+  COLS.forEach(c=>{const th=document.createElement('th');th.className=srtC===c.k?'sorted':'';const ico=srtC===c.k?(srtA?'↑':'↓'):'⇅';th.innerHTML=`<div class="th-in">${c.l}<span class="sort-ic">${ico}</span></div>`;th.onclick=()=>{if(srtC===c.k)srtA=!srtA;else{srtC=c.k;srtA=true;}srt();pg=1;render();buildHead();};tr.appendChild(th);});
+}
+function setStatus(s){
+  stF=s;
+  document.querySelectorAll('.chip').forEach(c=>c.classList.remove('on'));
+  if(!s)qs('vendSel').closest('.filter-bar').querySelector('.chip.all').classList.add('on');
+  document.querySelectorAll('.chip').forEach(c=>{
+    if(s===''&&c.classList.contains('all'))c.classList.add('on');
+    else if(s==='Matching'&&c.classList.contains('match'))c.classList.add('on');
+    else if(s==='Deviation'&&c.classList.contains('dev'))c.classList.add('on');
+    else if(s==='Mfg Date Not Found'&&c.classList.contains('warn'))c.classList.add('on');
+  });
+  applyF();
+}
+function applyF(){
+  const v=qs('vendSel').value,f=qs('facSel').value,q=(qs('srchBox').value||'').toLowerCase();
+  filt=DATA.filter(r=>{
+    if(stF&&r.Status!==stF)return false;
+    if(v&&r['Vendor Name']!==v)return false;
+    if(f&&r.Facility!==f)return false;
+    if(q&&!r['Item SkuCode'].toLowerCase().includes(q)&&!r['Item Type Name'].toLowerCase().includes(q))return false;
+    return true;
+  });
+  srt();pg=1;qs('detSub').textContent=filt.length+' records · GRN Code + Vendor SKU granularity';render();
+}
+function resetF(){
+  stF='';qs('vendSel').value='';qs('facSel').value='';qs('srchBox').value='';
+  document.querySelectorAll('.chip').forEach(c=>c.classList.remove('on'));
+  document.querySelector('.chip.all').classList.add('on');
+  applyF();
+}
+function srt(){
+  filt.sort((a,b)=>{let av=a[srtC]??'',bv=b[srtC]??'';if(av===''&&bv==='')return 0;if(av==='')return 1;if(bv==='')return -1;const n=typeof av==='number'&&typeof bv==='number';if(n)return srtA?av-bv:bv-av;return srtA?String(av).localeCompare(String(bv)):String(bv).localeCompare(String(av));});
+}
+function render(){
+  const pages=Math.ceil(filt.length/PP),s=(pg-1)*PP,sl=filt.slice(s,s+PP);
+  qs('tblCount').textContent=`Showing ${filt.length?s+1:0}–${Math.min(s+PP,filt.length)} of ${filt.length} records`;
+  qs('tblPgs').textContent=pages>1?`Page ${pg} of ${pages}`:'';
+  if(!sl.length){qs('tbody').innerHTML=`<tr><td colspan="${COLS.length}"><div class="empty"><h3>No records match</h3><p>Adjust the filters above</p></div></td></tr>`;qs('pag').innerHTML='';return;}
+  qs('tbody').innerHTML=sl.map(r=>{
+    const dv=r['Deviation (days)'];
+    const dc=dv===''||dv===null?'td-mono td-r':dv>0?'td-pos':dv<0?'td-neg':'td-zero';
+    const dt=dv===''||dv===null?'—':dv>0?`+${dv}d`:dv===0?'±0d':`${dv}d`;
+    const pill=r.Status==='Matching'?'<span class="pill pm"><span class="pill-dot" style="background:#047857"></span>Match</span>':r.Status==='Mfg Date Not Found'?'<span class="pill pw"><span class="pill-dot" style="background:#92400e"></span>Missing Mfg</span>':'<span class="pill pd"><span class="pill-dot" style="background:#b91c1c"></span>Deviation</span>';
+    const sku=r['Item SkuCode'];const nm=r['Item Type Name'];const vn=r['Vendor Name'];
+    return`<tr><td class="td-grn">${r['GRN Code']}</td><td>${r['GRN Date']}</td><td class="td-sku" title="${sku}">${sku.length>18?sku.slice(0,18)+'…':sku}</td><td class="td-name" title="${nm}">${nm}</td><td title="${vn}">${vn.length>20?vn.slice(0,20)+'…':vn}</td><td class="td-mono">${r['Vendor Batch Number']}</td><td class="td-mono">${r.Manufacturing||'—'}</td><td class="td-mono">${r['Expiry Date']}</td><td class="td-r">${r['Actual Shelf Life (days)']!==''?r['Actual Shelf Life (days)']+'d':'—'}</td><td class="td-r">${r['Standard Shelf Life (days)']!==''?r['Standard Shelf Life (days)']+'d':'—'}</td><td class="${dc}">${dt}</td><td>${pill}</td><td>${r.Facility}</td></tr>`;
+  }).join('');
+  renderPag(pages);
+}
+function renderPag(pages){
+  if(pages<=1){qs('pag').innerHTML='';return;}
+  let h=`<button class="pg" ${pg===1?'disabled':''} onclick="goPg(${pg-1})">‹</button>`;
+  for(let i=1;i<=pages;i++){if(i===1||i===pages||Math.abs(i-pg)<=1)h+=`<button class="pg ${i===pg?'on':''}" onclick="goPg(${i})">${i}</button>`;else if(Math.abs(i-pg)===2)h+=`<span class="pg-gap">…</span>`;}
+  h+=`<button class="pg" ${pg===pages?'disabled':''} onclick="goPg(${pg+1})">›</button>`;
+  qs('pag').innerHTML=h;
+}
+function goPg(p){pg=p;render();document.querySelector('.tbl-shell').scrollIntoView({behavior:'smooth',block:'nearest'})}
+
+function exportCSV(){
+  const ks=COLS.map(c=>c.k);
+  const rows=[ks.map(k=>`"${k}"`).join(','),...filt.map(r=>ks.map(k=>`"${String(r[k]??'').replace(/"/g,'""')}"`).join(','))];
+  const b=new Blob([rows.join('\n')],{type:'text/csv;charset=utf-8;'});
+  const u=URL.createObjectURL(b),a=document.createElement('a');
+  a.href=u;a.download=`GRN_ShelfLife_${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(u);
+  showToast('✓ CSV exported — '+filt.length+' records');
+}
+
+// ── SCHEDULE SYSTEM ──────────────────────────────────────────
+const PUBLISH_DOW = 1;
+const WINDOW_START = 9;
+const WINDOW_END   = 10;
+const TZ_OFFSET_IST = 330;
+
+function nowIST(){
+  const n=new Date(),u=n.getTime()+n.getTimezoneOffset()*60000;
+  return new Date(u+TZ_OFFSET_IST*60000);
+}
+function nextMondayWindow(){
+  const t=nowIST(),d=t.getDay(),h=t.getHours();
+  const isMon=d===PUBLISH_DOW,before=h<WINDOW_START,inWin=h>=WINDOW_START&&h<WINDOW_END;
+  if(isMon&&(before||inWin)){const w=new Date(t);w.setHours(WINDOW_START,0,0,0);return w;}
+  const days=(8-d)%7||7,next=new Date(t);
+  next.setDate(t.getDate()+days);next.setHours(WINDOW_START,0,0,0);return next;
+}
+function isInRefreshWindow(){
+  const t=nowIST();return t.getDay()===PUBLISH_DOW&&t.getHours()>=WINDOW_START&&t.getHours()<WINDOW_END;
+}
+function fmtDuration(ms){
+  if(ms<=0)return '00:00:00';
+  const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),d=Math.floor(h/24);
+  if(d>1)return d+'d '+(h%24)+'h '+(m%60)+'m';
+  if(h>0)return h+'h '+(m%60)+'m '+(s%60)+'s';
+  return String(m%60).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
+}
+function fmtWinDate(d){
+  const ds=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],ms=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return ds[d.getDay()]+', '+d.getDate()+' '+ms[d.getMonth()]+' \u00b7 '+String(d.getHours()).padStart(2,'0')+':00 IST';
+}
+function updateScheduleUI(){
+  const btn=qs('rfBtn'),pill=qs('livePill'),ll=qs('liveLabel'),sl=qs('scheduleLabel'),sv=qs('scheduleVal');
+  if(isInRefreshWindow()){
+    btn.disabled=false;btn.classList.add('ready');qs('rfBtnLabel').textContent='Refresh Now';
+    pill.className='live-pill live-now';ll.textContent='LIVE';
+    sl.textContent='Window closes';
+    const t=nowIST(),closeMs=(WINDOW_END-t.getHours())*3600000-t.getMinutes()*60000-t.getSeconds()*1000;
+    sv.textContent=fmtDuration(closeMs);sv.className='schedule-val ready';
+  }else{
+    btn.disabled=true;btn.classList.remove('ready');qs('rfBtnLabel').textContent='Refresh';
+    pill.className='live-pill scheduled';ll.textContent='SCHEDULED';
+    sl.textContent='Next refresh';
+    const win=nextMondayWindow(),diff=win-nowIST();
+    sv.textContent=fmtDuration(diff);sv.className='schedule-val countdown';
+  }
+}
+updateScheduleUI();
+setInterval(updateScheduleUI,1000);
+
+// ── LIVE DATA FROM GOOGLE SHEET ──────────────────────────────────
+// Set this to your Google Sheet ID (same as CONFIG.resultsSheetId in .gs file)
+const LIVE_SHEET_ID = 'YOUR_GOOGLE_SHEET_ID';
+
+function loadLiveData(){
+  if(!LIVE_SHEET_ID||LIVE_SHEET_ID==='YOUR_GOOGLE_SHEET_ID'){
+    showToast('\u26a0 Sheet ID not configured — showing cached data');
+    return;
+  }
+  const btn=qs('rfBtn');
+  btn.classList.add('spin');
+  qs('rfBtnLabel').textContent='Loading...';
+
+  const dataUrl='https://docs.google.com/spreadsheets/d/'+LIVE_SHEET_ID+'/gviz/tq?tqx=out:json&sheet=Data';
+  const metaUrl='https://docs.google.com/spreadsheets/d/'+LIVE_SHEET_ID+'/gviz/tq?tqx=out:json&sheet=Meta';
+
+  Promise.all([fetch(dataUrl).then(r=>r.text()),fetch(metaUrl).then(r=>r.text())])
+  .then(([dataTxt,metaTxt])=>{
+    const parseGviz=t=>JSON.parse(t.replace(/^[^(]+[(]/,'').replace(/[)];?\s*$/,''));
+    const dataJ=parseGviz(dataTxt);
+    const metaJ=parseGviz(metaTxt);
+
+    const cols=dataJ.table.cols.map(c=>c.label);
+    const newData=dataJ.table.rows.map(row=>{
+      const obj={};
+      row.c.forEach((cell,i)=>{obj[cols[i]]=cell?String(cell.v!=null?cell.v:''):'';});
+      ['Actual Shelf Life (days)','Standard Shelf Life (days)','Deviation (days)'].forEach(k=>{
+        if(obj[k]!==''&&!isNaN(+obj[k]))obj[k]=+obj[k];
+      });
+      return{
+        'GRN Code':obj['GRN Code']||'',
+        'GRN Date':obj['GRN Date']||'',
+        'Item SkuCode':obj['Item SkuCode']||'',
+        'Item Type Name':obj['Item Type Name']||'',
+        'Vendor Name':obj['Vendor Name']||'',
+        'Vendor Batch Number':obj['Vendor Batch Number']||'',
+        'Manufacturing':obj['Manufacturing']||'',
+        'Expiry Date':obj['Expiry Date']||'',
+        'Actual Shelf Life (days)':obj['Actual Shelf Life (days)'],
+        'Standard Shelf Life (days)':obj['Standard Shelf Life (days)'],
+        'Deviation (days)':obj['Deviation (days)'],
+        'Status':obj['Status']||'',
+        'Facility':obj['Facility']||'',
+      };
+    });
+
+    const metaRows=metaJ.table.rows;
+    const meta={};
+    metaRows.forEach(row=>{if(row.c[0]&&row.c[1])meta[row.c[0].v]=row.c[1].v;});
+
+    DATA.length=0;
+    newData.forEach(r=>DATA.push(r));
+
+    if(meta.weekRange) qs('dateBadge').textContent=meta.weekRange;
+
+    buildDrops();buildHead();applyF();renderS1();
+
+    const ts=meta.lastUpdated?new Date(meta.lastUpdated).toLocaleString('en-IN',{timeZone:'Asia/Kolkata'}):'—';
+    showToast('\u2713 '+DATA.length+' records loaded — updated '+ts);
+
+  }).catch(err=>{
+    showToast('\u26a0 Live load failed — '+err.message);
+  }).finally(()=>{
+    btn.classList.remove('spin');
+    qs('rfBtnLabel').textContent=isInRefreshWindow()?'Refresh Now':'Refresh';
+  });
+}
+
+function doRefresh(){ loadLiveData(); }
+function showToast(msg){const t=qs('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),3600)}
+</script>
+</body>
+</html>
