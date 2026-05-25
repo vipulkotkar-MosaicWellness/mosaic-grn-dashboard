@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%2318160f'/><text y='22' x='5' font-size='18' font-family='sans-serif' fill='white'>M</text></svg>">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>GRN Shelf Life Compliance — Mosaic Wellness</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -676,65 +677,107 @@ function updateScheduleUI(){
 // updateScheduleUI() moved into DOMContentLoaded below
 
 // ── LIVE DATA FROM GOOGLE SHEET ──────────────────────────────────
+// ── GVIZ DATE PARSER ────────────────────────────────────────────
+// Google Sheets gviz returns dates as Date(yyyy,mm,dd) — mm is 0-indexed
+function parseGvizDate(v){
+  if(!v&&v!==0) return '';
+  const s=String(v);
+  const m=s.match(/Date\((\d+),(\d+),(\d+)/);
+  if(!m) return s;
+  const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return parseInt(m[3])+' '+MONTHS[parseInt(m[2])]+' '+m[1];
+}
+
+function getCellValue(cell,colType){
+  if(!cell||cell.v===null||cell.v===undefined) return '';
+  if(colType==='date'||colType==='datetime') return parseGvizDate(cell.v);
+  if(colType==='number') return cell.v;
+  return cell.v!=null?String(cell.v):'';
+}
+
 function loadLiveData(){
   if(!LIVE_SHEET_ID||LIVE_SHEET_ID==='YOUR_GOOGLE_SHEET_ID'){
-    showToast('\u26a0 Sheet ID not configured — showing cached data');
+    showToast('\u26a0 Sheet ID not configured');
     return;
   }
-  const btn=qs('rfBtn');
-  const lbl=qs('rfBtnLabel');
+  const btn=qs('rfBtn'),lbl=qs('rfBtnLabel');
   if(btn) btn.classList.add('spin');
   if(lbl) lbl.textContent='Loading...';
 
   const dataUrl='https://docs.google.com/spreadsheets/d/'+LIVE_SHEET_ID+'/gviz/tq?tqx=out:json&sheet=Data';
   const metaUrl='https://docs.google.com/spreadsheets/d/'+LIVE_SHEET_ID+'/gviz/tq?tqx=out:json&sheet=Meta';
 
-  Promise.all([fetch(dataUrl).then(r=>r.text()),fetch(metaUrl).then(r=>r.text())])
-  .then(([dataTxt,metaTxt])=>{
+  Promise.all([
+    fetch(dataUrl).then(r=>r.text()),
+    fetch(metaUrl).then(r=>r.text())
+  ]).then(([dataTxt,metaTxt])=>{
+
     const parseGviz=t=>JSON.parse(t.replace(/^[^(]+[(]/,'').replace(/[)];?\s*$/,''));
     const dataJ=parseGviz(dataTxt);
     const metaJ=parseGviz(metaTxt);
 
-    const cols=dataJ.table.cols.map(c=>c.label);
-    const newData=dataJ.table.rows.map(row=>{
+    // Extract column labels AND types from gviz schema
+    const cols   = dataJ.table.cols.map(c=>c.label);
+    const types  = dataJ.table.cols.map(c=>c.type);   // 'string','date','datetime','number'
+
+    const newData = dataJ.table.rows.map(row=>{
       const obj={};
-      row.c.forEach((cell,i)=>{obj[cols[i]]=cell?String(cell.v!=null?cell.v:''):'';});
-      ['Actual Shelf Life (days)','Standard Shelf Life (days)','Deviation (days)'].forEach(k=>{
-        if(obj[k]!==''&&!isNaN(+obj[k]))obj[k]=+obj[k];
+      row.c.forEach((cell,i)=>{
+        obj[cols[i]] = getCellValue(cell, types[i]);
       });
+
+      // Coerce numeric SL/deviation fields
+      ['Actual Shelf Life (days)','Standard Shelf Life (days)','Deviation (days)'].forEach(k=>{
+        const v=obj[k];
+        if(v!==''&&v!==null&&v!==undefined&&!isNaN(+v)) obj[k]=+v;
+      });
+
+      // Handle GRN Date — strip time component if present ("18 May 2026 11:07:25" → "18 May 2026")
+      if(obj['GRN Date']) obj['GRN Date']=obj['GRN Date'].replace(/\s+\d{1,2}:\d{2}:\d{2}$/,'');
+
       return{
-        'GRN Code':obj['GRN Code']||'',
-        'GRN Date':obj['GRN Date']||'',
-        'Item SkuCode':obj['Item SkuCode']||'',
-        'Item Type Name':obj['Item Type Name']||'',
-        'Vendor Name':obj['Vendor Name']||'',
-        'Vendor Batch Number':obj['Vendor Batch Number']||'',
-        'Manufacturing':obj['Manufacturing']||'',
-        'Expiry Date':obj['Expiry Date']||'',
-        'Actual Shelf Life (days)':obj['Actual Shelf Life (days)'],
-        'Standard Shelf Life (days)':obj['Standard Shelf Life (days)'],
-        'Deviation (days)':obj['Deviation (days)'],
-        'Status':obj['Status']||'',
-        'Facility':obj['Facility']||'',
+        'GRN Code'                   : obj['GRN Code']                    || '',
+        'GRN Date'                   : obj['GRN Date']                    || '',
+        'Item SkuCode'               : obj['Item SkuCode']                || '',
+        'Item Type Name'             : obj['Item Type Name']              || '',
+        'Vendor Name'                : obj['Vendor Name']                 || '',
+        'Vendor Batch Number'        : obj['Vendor Batch Number']         || '',
+        'Manufacturing'              : obj['Manufacturing']               || '',
+        'Expiry Date'                : obj['Expiry Date']                 || '',
+        'Actual Shelf Life (days)'   : obj['Actual Shelf Life (days)'],
+        'Standard Shelf Life (days)' : obj['Standard Shelf Life (days)'],
+        'Deviation (days)'           : obj['Deviation (days)'],
+        'Status'                     : obj['Status']                      || '',
+        'Facility'                   : obj['Facility']                    || '',
       };
     });
 
-    const metaRows=metaJ.table.rows;
+    // Parse Meta sheet
     const meta={};
-    metaRows.forEach(row=>{if(row.c[0]&&row.c[1])meta[row.c[0].v]=row.c[1].v;});
+    metaJ.table.rows.forEach(row=>{
+      if(row.c[0]&&row.c[1]) meta[String(row.c[0].v)]=String(row.c[1].v);
+    });
 
+    // Update global DATA
     DATA.length=0;
     newData.forEach(r=>DATA.push(r));
 
-    if(meta.weekRange) qs('dateBadge').textContent=meta.weekRange;
+    // Update date badge
+    const db=qs('dateBadge');
+    if(db&&meta.weekRange) db.textContent=meta.weekRange;
 
+    // Re-render
     buildDrops();buildHead();applyF();renderS1();
 
-    const ts=meta.lastUpdated?new Date(meta.lastUpdated).toLocaleString('en-IN',{timeZone:'Asia/Kolkata'}):'—';
-    showToast('\u2713 '+DATA.length+' records loaded — updated '+ts);
+    const ts=meta.lastUpdated
+      ? new Date(meta.lastUpdated).toLocaleString('en-IN',{timeZone:'Asia/Kolkata',
+          day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})
+      : '—';
+    showToast('\u2713 '+DATA.length+' records loaded \u00b7 '+ts);
 
   }).catch(err=>{
-    showToast('\u26a0 Live load failed — '+err.message);
+    console.error('loadLiveData error:',err);
+    showToast('\u26a0 Live load failed \u2014 '+err.message);
   }).finally(()=>{
     const b=qs('rfBtn'),l=qs('rfBtnLabel');
     if(b) b.classList.remove('spin');
